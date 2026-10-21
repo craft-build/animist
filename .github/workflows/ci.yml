@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        features:
+          - "--all-features"
+          - "--no-default-features --features default-index,mcp"
+        include:
+          - os: macos-latest
+            features: "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test ${{ matrix.features }}
+
+  # Every non-default feature combination must at least compile: the test
+  # matrix above needs `default-index` and `mcp` for the test crates, so a
+  # feature-gating bug like ungated `rmcp` use in `codetools/review.rs`
+  # (0.2.3) never surfaced. `check` builds the lib + bin exactly as a
+  # consumer of each feature set would.
+  feature-matrix:
+    name: Check (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - ""
+          - "--features mcp"
+          - "--features code-tools"
+          - "--features default-index"
+          - "--features default-index,mcp"
+          - "--features default-index,code-tools"
+          - "--features code-tools,mcp"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: cargo check --no-default-features ${{ matrix.features }}
+
+  lint:
+    name: Fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
