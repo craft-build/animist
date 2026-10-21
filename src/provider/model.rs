@@ -80,6 +80,9 @@ pub enum Effort {
 #[derive(Struct!, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct Thinking {
+    #[serde(default)]
+    #[builder(default)]
+    pub supported: bool,
     pub required: bool,
     pub efforts: Vec<Effort>,
 }
@@ -111,6 +114,9 @@ pub struct ModelInfo {
     pub tier: Tier,
     pub features: Features,
     pub pricing: Pricing,
+    #[serde(default)]
+    #[builder(default)]
+    pub config: Config,
 }
 
 #[derive(Enum!)]

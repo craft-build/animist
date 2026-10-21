@@ -1,0 +1,60 @@
+{
+  "example": {
+    "id": "example",
+    "name": "Example Provider",
+    "env": ["EXAMPLE_API_KEY"],
+    "npm": "@ai-sdk/example",
+    "api": "https://example.invalid/v1",
+    "doc": "https://example.invalid/docs",
+    "future_provider_field": {"enabled": true},
+    "models": {
+      "reasoner": {
+        "id": "reasoner",
+        "name": "Example Reasoner",
+        "reasoning": true,
+        "reasoning_options": [
+          {"type": "effort", "values": [null, "none", "default", "low", "high", "xhigh", "max", "future", "high"]},
+          {"type": "budget_tokens", "min": -1, "max": 32768}
+        ],
+        "tool_call": true,
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "limit": {"context": 200000, "input": 180000, "output": 20000},
+        "cost": {
+          "input": 3,
+          "output": 15,
+          "cache_read": 0.3,
+          "cache_write": 3.75,
+          "tiers": [{"input": 6, "tier": {"type": "context", "size": 200000}}]
+        },
+        "provider": {"npm": "@ai-sdk/compatible"},
+        "future_model_field": [1, 2, 3]
+      },
+      "budget-only": {
+        "name": "Budget-only Reasoner",
+        "reasoning": true,
+        "reasoning_options": [{"type": "budget_tokens", "min": 1024}],
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "cost": {"input": 1, "output": 2},
+        "limit": {"context": 32000, "output": 4096}
+      },
+      "text-only": {
+        "name": "Plain Text",
+        "reasoning": false,
+        "attachment": true,
+        "modalities": {"input": ["text", "pdf"], "output": ["text", "image"]},
+        "limit": {"context": 8192, "output": 2048}
+      }
+    }
+  },
+  "other": {
+    "id": "other",
+    "name": "Other Provider",
+    "models": {
+      "reasoner": {
+        "name": "Independent deployment",
+        "reasoning": true,
+        "cost": {"input": 0, "output": 0}
+      }
+    }
+  }
+}
