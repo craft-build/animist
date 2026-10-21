@@ -1,14 +1,9 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod provider;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[macro_use]
+extern crate macro_rules_attribute;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+derive_alias! {
+ #[derive(Struct!)] = #[derive(Debug, Clone, Default, PartialEq)];
+ #[derive(Enum!)] = #[derive(Debug, Clone, PartialEq, Eq)];
 }
