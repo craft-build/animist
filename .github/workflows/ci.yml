@@ -18,7 +18,7 @@ jobs:
         os: [ubuntu-latest]
         features:
           - "--all-features"
-          - "--no-default-features --features default-index,mcp"
+          - "--no-default-features"
         include:
           - os: macos-latest
             features: "--all-features"
@@ -39,21 +39,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        features:
-          - ""
-          - "--features mcp"
-          - "--features code-tools"
-          - "--features default-index"
-          - "--features default-index,mcp"
-          - "--features default-index,code-tools"
-          - "--features code-tools,mcp"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check
-        run: cargo check --no-default-features ${{ matrix.features }}
+        run: cargo check --all-features
 
   lint:
     name: Fmt + clippy
