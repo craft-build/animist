@@ -4,7 +4,6 @@ use crate::{
 };
 use bon::Builder;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Enum!, Deserialize, Serialize)]
 pub enum ProviderEvent {
@@ -17,6 +16,10 @@ pub enum ProviderEvent {
     ToolUseStart {
         id: String,
         name: String,
+    },
+    ToolInputDelta {
+        id: String,
+        partial_json: String,
     },
     PromptProgress {
         processed: u32,
@@ -39,6 +42,7 @@ pub enum ThinkingConfig {
 pub struct RequestOptions {
     pub thinking: ThinkingConfig,
     pub fast: bool,
+    pub max_output_tokens: Option<u32>,
 }
 
 #[derive(Struct!, Builder, Deserialize, Serialize)]

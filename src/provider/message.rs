@@ -1,4 +1,5 @@
 use crate::{Enum, Struct};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,6 +10,23 @@ pub enum Role {
     #[default]
     User,
     Assistant,
+}
+
+#[derive(Enum!, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ImageSource {
+    Base64 { media_type: String, data: String },
+    Url { url: String },
+}
+
+impl ImageSource {
+    /// Encodes raw image bytes using standard padded base64.
+    pub fn from_bytes(media_type: impl Into<String>, bytes: &[u8]) -> Self {
+        Self::Base64 {
+            media_type: media_type.into(),
+            data: STANDARD.encode(bytes),
+        }
+    }
 }
 
 #[derive(Enum!, Deserialize, Serialize)]
@@ -40,7 +58,9 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         loaded_tools: Vec<String>,
     },
-    /* Image { source: ImageSource } */
+    Image {
+        source: ImageSource,
+    },
 }
 
 impl ContentBlock {
@@ -58,7 +78,7 @@ pub enum MessageKind {
 }
 
 impl MessageKind {
-    fn is_turn(&self) -> bool {
+    pub fn is_turn(&self) -> bool {
         matches!(self, Self::Turn)
     }
 }
@@ -67,8 +87,8 @@ impl MessageKind {
 #[builder(on(_, into))]
 #[serde(rename_all = "snake_case")]
 pub struct Message {
-    pub role: String,
-    pub content: Vec<String>,
+    pub role: Role,
+    pub content: Vec<ContentBlock>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_text: Option<String>,
     #[serde(default, skip_serializing_if = "MessageKind::is_turn")]

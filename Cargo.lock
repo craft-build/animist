@@ -18,6 +18,7 @@ dependencies = [
  "arc-handle",
  "async-trait",
  "barkml",
+ "base64",
  "bon",
  "flume",
  "macro_rules_attribute",

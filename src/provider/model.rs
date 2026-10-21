@@ -31,6 +31,7 @@ impl Pricing {
         fast: None,
     };
 
+    /// Checks standard rates only, ignoring fast pricing.
     pub fn is_zero(&self) -> bool {
         self.input == 0.0 && self.output == 0.0 && self.cache_write == 0.0 && self.cache_read == 0.0
     }
@@ -134,4 +135,6 @@ pub struct Model {
     pub id: String,
     pub provider: Arc<str>,
     pub info: ModelInfo,
+    #[builder(default)]
+    pub overrides: Overrides,
 }
