@@ -1,0 +1,10 @@
+[package]
+name = "animist"
+description = "Model inference and agent building for the Craft ecosystem"
+license = "Apache-2.0"
+repository = "https://github.com/craft-build/animist"
+authors = ["Jarrett Tierney <akarifur@pm.me>"]
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
