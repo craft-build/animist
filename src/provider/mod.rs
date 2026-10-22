@@ -1,6 +1,7 @@
 use arc_handle::arc_handle;
 use async_trait::async_trait;
 
+pub mod anthropic;
 pub(crate) mod error;
 mod message;
 mod model;

@@ -77,6 +77,9 @@ pub enum StopReason {
     EndTurn,
     ToolUse,
     MaxTokens,
+    PauseTurn,
+    Refusal,
+    ContextWindowExceeded,
 }
 
 #[derive(Struct!, Builder)]

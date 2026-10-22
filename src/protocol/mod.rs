@@ -6,6 +6,7 @@ use flume::Sender;
 
 use crate::provider::{Message, Model, ProviderEvent, RequestOptions, StreamResponse, Tool};
 
+pub mod anthropic;
 mod error;
 pub mod openai;
 pub(crate) mod sse;

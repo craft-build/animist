@@ -29,4 +29,23 @@ pub enum ProviderError {
     MissingModelId,
     #[snafu(display("Credential environment variable {variable} is missing or empty"))]
     Credentials { variable: String },
+    #[snafu(display("Failed to read credential variable {variable}: {source}"))]
+    CredentialEnvironment {
+        variable: String,
+        source: std::env::VarError,
+    },
+    #[snafu(display("API key is not a valid HTTP header value: {source}"))]
+    CredentialHeader {
+        source: reqwest::header::InvalidHeaderValue,
+    },
+    #[snafu(display("Thinking is not enabled for model {model}"))]
+    ThinkingUnsupported { model: String },
+    #[snafu(display(
+        "Thinking budget {budget} must be at least 1024 and less than max_tokens {max_tokens}"
+    ))]
+    InvalidThinkingBudget { budget: u32, max_tokens: u32 },
+    #[snafu(display("Paginated model listing has no last_id"))]
+    MissingModelCursor,
+    #[snafu(display("Paginated model listing repeated cursor {cursor}"))]
+    RepeatedModelCursor { cursor: String },
 }

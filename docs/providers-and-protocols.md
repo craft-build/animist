@@ -3,8 +3,9 @@
 ## Status and scope
 
 The catalog and public provider interface are implemented. OpenAI's provider
-and its Chat Completions and Responses adapters are implemented; see
-[OpenAI usage](openai.md). Other adapters below remain future work.
+supports Chat Completions and Responses; Anthropic's provider supports Messages.
+See [OpenAI usage](openai.md) and [Anthropic usage](anthropic.md).
+Other adapters below remain future work.
 The public `protocol::Protocol` async trait defines the shared adapter contract.
 
 ## Decision
@@ -42,14 +43,16 @@ Associated options carry protocol-specific settings resolved by provider policy.
 The contract does not require JSON, HTTP, or SSE for future implementations.
 
 OpenAI's stateless `ChatCompletions` and `Responses` implementations live under
-`protocol::openai`, alongside their private Serde wire types.
+`protocol::openai`; Anthropic's `Messages` lives under `protocol::anthropic`,
+each alongside its private Serde wire types.
 The shared HTTP SSE reader lives in `protocol::sse` and reports `SseError`.
 Their mutable stream state belongs to each assembly future; no shared handle or
 lock is needed. Providers own routing and transport and invoke the selected
 adapter through the trait.
 
 Protocols return `ProtocolError`, which transparently wraps concrete errors such
-as `openai::OpenAIProtocolError`. The provider boundary returns `ProviderError`,
+as `openai::OpenAIProtocolError` and `anthropic::AnthropicProtocolError`.
+The provider boundary returns `ProviderError`,
 with a transparent `ProtocolError` variant. Structured failure variants preserve
 source errors and protocol context without depending on provider error types.
 
