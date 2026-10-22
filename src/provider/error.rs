@@ -3,6 +3,11 @@ use snafu::Snafu;
 #[derive(Snafu, Debug)]
 #[snafu(visibility(pub(crate)))]
 pub enum ProviderError {
+    #[cfg(feature = "bedrock")]
+    #[snafu(transparent)]
+    Bedrock {
+        source: super::bedrock::BedrockError,
+    },
     #[snafu(display("Provider transport failed: {source}"))]
     Transport { source: reqwest::Error },
     #[snafu(display("Provider returned HTTP {status}: {body}"))]
