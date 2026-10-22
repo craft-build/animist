@@ -1,7 +1,7 @@
 use serde_json::Value;
 use snafu::Snafu;
 
-use crate::provider::ProviderEvent;
+use crate::provider::{ProviderEvent, StopReason};
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -43,8 +43,10 @@ pub enum OpenAIProtocolError {
     ToolArgumentsBeforeIdentity { index: u64 },
     #[snafu(display("Unexpected Chat Completions finish reason {reason}"))]
     UnexpectedFinishReason { reason: String },
-    #[snafu(display("Chat Completions stream ended before [DONE]"))]
-    TruncatedChatStream,
+    #[snafu(display(
+        "Chat Completions stream ended before [DONE] (finish reason {finish_reason:?})"
+    ))]
+    TruncatedChatStream { finish_reason: Option<StopReason> },
     #[snafu(display("Chat Completions stream has no finish reason"))]
     MissingFinishReason,
     #[snafu(display("Incomplete identity for tool call index {index}"))]

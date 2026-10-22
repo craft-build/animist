@@ -67,6 +67,11 @@ invalid tool JSON, unsupported finish reasons, and premature EOF return errors
 through `OpenAIProtocolError` and `ProtocolError` into `ProviderError`.
 Events emitted before an error remain available.
 
+The SSE reader accepts a final `[DONE]` event without a trailing blank line.
+Completion still requires both `[DONE]` and a finish reason. A
+`TruncatedChatStream` error includes the finish reason seen before EOF, if any;
+complete-looking text alone does not establish that a response finished.
+
 ## References
 
 - [Runnable manual tests](manual-provider-tests.md)

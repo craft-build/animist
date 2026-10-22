@@ -267,7 +267,12 @@ impl Protocol for ChatCompletions {
                 }
             }
         }
-        ensure!(done, TruncatedChatStreamSnafu);
+        ensure!(
+            done,
+            TruncatedChatStreamSnafu {
+                finish_reason: stop.clone()
+            }
+        );
         let stop = stop.context(MissingFinishReasonSnafu)?;
         let mut blocks = Vec::new();
         if !reasoning.is_empty() {

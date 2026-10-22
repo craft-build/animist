@@ -15,6 +15,111 @@ use tokio::{
 
 const FIXTURE: &str = include_str!("fixtures/synthetic.sse");
 
+#[tokio::test]
+async fn final_done_event_does_not_require_a_trailing_blank_line() {
+    use animist::provider::Effort;
+
+    for ending in [
+        "data: [DONE]",
+        "data: [DONE]\n",
+        "data: [DONE]\r\n",
+        "data: [DONE]\r",
+    ] {
+        let body = format!(
+            "data: {}\n\n{ending}",
+            json!({
+                "choices":[{"index":0,"delta":{"content":"Two sentences. Complete."},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":12,"completion_tokens":8}
+            })
+        );
+        let (url, task) = server("200 OK", "text/event-stream", &body).await;
+        let provider = Synthetic::new(
+            SyntheticConfig::builder()
+                .base_url(url)
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap();
+        let mut model = model();
+        model.id = "syn:small:text".into();
+        model.info.features.thinking.supported = true;
+        model.info.features.thinking.efforts = vec![Effort::Low];
+        let (tx, rx) = flume::unbounded();
+        let response = provider
+            .stream_message(
+                &model,
+                &[],
+                "",
+                &[],
+                &tx,
+                RequestOptions::builder()
+                    .thinking(ThinkingConfig::Effort(Effort::Low))
+                    .fast(false)
+                    .max_output_tokens(4096_u32)
+                    .build(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.stop_reason, Some(StopReason::EndTurn));
+        assert_eq!(response.usage.input, 12);
+        assert_eq!(response.usage.output, 8);
+        assert_eq!(
+            response.message.content,
+            vec![ContentBlock::Text {
+                text: "Two sentences. Complete.".into()
+            }]
+        );
+        assert_eq!(rx.len(), 1);
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn eof_still_requires_done_and_a_finish_reason() {
+    use animist::protocol::{ProtocolError, openai::OpenAIProtocolError};
+
+    for (finish, done) in [(None, false), (Some("stop"), false), (None, true)] {
+        let mut body = format!(
+            "data: {}",
+            json!({
+                "choices":[{"index":0,"delta":{"content":"Complete-looking text."},"finish_reason":finish}]
+            })
+        );
+        if done {
+            body.push_str("\n\ndata: [DONE]");
+        }
+        let (url, task) = server("200 OK", "text/event-stream", &body).await;
+        let provider = Synthetic::new(
+            SyntheticConfig::builder()
+                .base_url(url)
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap();
+        let (tx, _rx) = flume::unbounded();
+        let error = provider
+            .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+            .await
+            .unwrap_err();
+        match error {
+            ProviderError::Protocol {
+                source:
+                    ProtocolError::OpenAI {
+                        source: OpenAIProtocolError::TruncatedChatStream { finish_reason },
+                    },
+            } if !done => assert_eq!(finish_reason, finish.map(|_| StopReason::EndTurn)),
+            ProviderError::Protocol {
+                source:
+                    ProtocolError::OpenAI {
+                        source: OpenAIProtocolError::MissingFinishReason,
+                    },
+            } if done => {}
+            error => panic!("unexpected completion error: {error:?}"),
+        }
+        task.await.unwrap();
+    }
+}
+
 #[test]
 fn config_defaults_and_credential_serialization_match_other_providers() {
     let defaults: SyntheticConfig = serde_json::from_value(json!({})).unwrap();
@@ -138,7 +243,7 @@ async fn protocol_errors_keep_the_existing_layered_types_and_payloads() {
                 ProviderError::Protocol {
                     source:
                         ProtocolError::OpenAI {
-                            source: OpenAIProtocolError::TruncatedChatStream,
+                            source: OpenAIProtocolError::TruncatedChatStream { .. },
                         },
                 },
             ) => {}

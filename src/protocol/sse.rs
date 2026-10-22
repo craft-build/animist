@@ -43,17 +43,21 @@ impl Events {
             if let Some(offset) = self.buffer[self.cursor..]
                 .iter()
                 .position(|b| *b == b'\n' || *b == b'\r')
+                .or_else(|| {
+                    (self.eof && self.cursor < self.buffer.len())
+                        .then_some(self.buffer.len() - self.cursor)
+                })
             {
                 let end = self.cursor + offset;
-                if self.buffer[end] == b'\r' && end + 1 == self.buffer.len() && !self.eof {
+                if self.buffer.get(end) == Some(&b'\r') && end + 1 == self.buffer.len() && !self.eof
+                {
                     self.read().await?;
                     continue;
                 }
-                let width = if self.buffer[end] == b'\r' && self.buffer.get(end + 1) == Some(&b'\n')
-                {
-                    2
-                } else {
-                    1
+                let width = match self.buffer.get(end) {
+                    Some(b'\r') if self.buffer.get(end + 1) == Some(&b'\n') => 2,
+                    Some(_) => 1,
+                    None => 0,
                 };
                 let mut start = self.cursor;
                 if self.first_line {
@@ -66,20 +70,7 @@ impl Events {
                     std::str::from_utf8(&self.buffer[start..end]).context(InvalidUtf8Snafu)?;
                 self.cursor = end + width;
                 if line.is_empty() {
-                    if !self.data.is_empty() {
-                        let mut event = String::with_capacity(self.data_len);
-                        for (index, range) in self.data.drain(..).enumerate() {
-                            if index != 0 {
-                                event.push('\n');
-                            }
-                            event.push_str(
-                                std::str::from_utf8(&self.buffer[range])
-                                    .context(InvalidUtf8Snafu)?,
-                            );
-                        }
-                        self.buffer.drain(..self.cursor);
-                        self.cursor = 0;
-                        self.data_len = 0;
+                    if let Some(event) = self.dispatch()? {
                         return Ok(Some(event));
                     }
                 } else if let Some(data) = line
@@ -101,11 +92,28 @@ impl Events {
                     self.cursor = 0;
                 }
             } else if self.eof {
-                return Ok(None);
+                return self.dispatch();
             } else {
                 self.read().await?;
             }
         }
+    }
+
+    fn dispatch(&mut self) -> Result<Option<String>, SseError> {
+        if self.data.is_empty() {
+            return Ok(None);
+        }
+        let mut event = String::with_capacity(self.data_len);
+        for (index, range) in self.data.drain(..).enumerate() {
+            if index != 0 {
+                event.push('\n');
+            }
+            event.push_str(std::str::from_utf8(&self.buffer[range]).context(InvalidUtf8Snafu)?);
+        }
+        self.buffer.drain(..self.cursor);
+        self.cursor = 0;
+        self.data_len = 0;
+        Ok(Some(event))
     }
 
     async fn read(&mut self) -> Result<(), SseError> {
@@ -136,9 +144,15 @@ mod tests {
         for (body, expected) in [
             (
                 b": comment\r\ndata: first\r\ndata: second\r\n\r\n: ignored\r\ndata:\r\n\r\ndata: third\r\rdata: unfinished".as_slice(),
-                vec!["first\nsecond", "", "third"],
+                vec!["first\nsecond", "", "third", "unfinished"],
             ),
             (b"\xef\xbb\xbfdata: \xc3\xa9\n\ndata\n\n".as_slice(), vec!["é", ""]),
+            (b"data: [DONE]".as_slice(), vec!["[DONE]"]),
+            (b"data: [DONE]\n".as_slice(), vec!["[DONE]"]),
+            (b"data: [DONE]\r\n".as_slice(), vec!["[DONE]"]),
+            (b"data: [DONE]\r".as_slice(), vec!["[DONE]"]),
+            (b"data: first\ndata: second".as_slice(), vec!["first\nsecond"]),
+            (b": heartbeat at EOF".as_slice(), vec![]),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();

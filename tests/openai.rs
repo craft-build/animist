@@ -342,7 +342,9 @@ async fn errors_and_truncated_streams_return_errors() {
             sse(vec![
                 json!({"choices":[{"index":0,"delta":{"content":"partial"}}]}),
             ]),
-            Some(OpenAIProtocolError::TruncatedChatStream),
+            Some(OpenAIProtocolError::TruncatedChatStream {
+                finish_reason: None,
+            }),
         ),
         (
             Protocol::Responses,
