@@ -145,6 +145,7 @@ The repository includes live streaming and tool-call examples:
 ```sh
 cargo run --example synthetic -- --help
 cargo run --example zai-coding-plan -- --help
+cargo run --features bedrock --example bedrock -- --help
 ```
 
 Help requires no credentials or network access. Inference runs require provider

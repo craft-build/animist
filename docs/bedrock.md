@@ -143,6 +143,17 @@ provider settings remain separate.
 
 ## Validation
 
+For live streaming and a local tool-call round trip, use the
+[manual Bedrock example](manual-provider-tests.md#amazon-bedrock):
+
+```sh
+AWS_PROFILE=my-profile AWS_REGION=us-east-1 \
+  cargo run --features bedrock --example bedrock -- --tool-test
+```
+
+The example uses Anthropic Messages. Configure AWS credentials and select a
+model/inference profile accessible to your account; live requests may incur charges.
+
 ```sh
 cargo test --features bedrock --all-targets
 cargo test --no-default-features --all-targets

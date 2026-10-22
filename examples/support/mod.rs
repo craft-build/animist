@@ -71,9 +71,21 @@ impl Arguments {
             .iter()
             .any(|value| value == "--help" || value == "-h")
         {
+            let features = if example == "bedrock" {
+                " --features bedrock"
+            } else {
+                ""
+            };
+            let credentials = match example {
+                "bedrock" => {
+                    "AWS credential chain; AWS_PROFILE and AWS_REGION select profile/region"
+                }
+                "synthetic" => "SYNTHETIC_API_KEY",
+                _ => "ZHIPU_API_KEY (Coding Plan key)",
+            };
             let text = format!(
-                "cargo run --example {example} -- [OPTIONS]\n\
-                 Credentials: SYNTHETIC_API_KEY (synthetic), ZHIPU_API_KEY (zai-coding-plan)\n\
+                "cargo run{features} --example {example} -- [OPTIONS]\n\
+                 Credentials: {credentials}\n\
                  --model ID               Model ID (default: {default_model})\n\
                  --prompt TEXT            Prompt (default: a short connection test)\n\
                  --thinking MODE          adaptive (default), off, minimal, low, medium, high, xhigh, max\n\

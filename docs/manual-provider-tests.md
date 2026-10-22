@@ -28,6 +28,40 @@ from models.dev, since the Coding Plan provider has no documented discovery
 endpoint. No capabilities are guessed from model names. Z.AI catalog entries
 are not proof of subscription entitlement; check the plan's supported-tool rules.
 
+### Amazon Bedrock
+
+Enable the `bedrock` feature and configure the AWS credential chain (for example,
+an AWS profile with a current SSO session, or environment-based credentials).
+Select a region with `AWS_REGION` and, optionally, a profile with `AWS_PROFILE`:
+
+```sh
+AWS_PROFILE=my-profile AWS_REGION=us-east-1 \
+  cargo run --features bedrock --example bedrock
+
+AWS_PROFILE=my-profile AWS_REGION=us-east-1 \
+  cargo run --features bedrock --example bedrock -- --tool-test
+
+AWS_PROFILE=my-profile AWS_REGION=us-east-1 \
+  cargo run --features bedrock --example bedrock -- --list-models
+```
+
+This example uses the native Anthropic Messages API and defaults to
+`global.anthropic.claude-sonnet-4-6`, adaptive thinking, and 4,096 output tokens.
+It uses the same streamed output, `PASS` checks, and local tool round trip as
+the other examples. Inference consumes AWS quota and may incur charges.
+
+Use `--model ID` to select a Messages-compatible model or inference profile
+available to your account in that region. IDs are sent unchanged. Metadata comes
+from models.dev's `amazon-bedrock` catalog (or `--catalog PATH`), not AWS discovery;
+`--list-models` does not verify account access or regional/API availability.
+No capabilities are inferred from model names.
+
+The shared prompt, thinking, token-limit, and catalog options below also apply.
+For Bedrock, `--base-url` overrides the runtime **origin**, such as
+`http://127.0.0.1:PORT`, without a protocol path. Use fake AWS credentials for
+local mocks. See [Amazon Bedrock](bedrock.md) for IAM authentication, supported
+APIs, and routing constraints.
+
 ## Choose a model, prompt, or effort
 
 ```sh
@@ -77,6 +111,7 @@ Use fake credentials when testing a local mock.
 ```sh
 cargo run --example synthetic -- --help
 cargo run --example zai-coding-plan -- --help
+cargo run --features bedrock --example bedrock -- --help
 ```
 
 Help requires neither credentials nor network access. Streamed output and

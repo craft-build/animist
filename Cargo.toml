@@ -43,3 +43,7 @@ url = { version = "2", optional = true }
 
 [dev-dependencies]
 time = "0.3"
+
+[[example]]
+name = "bedrock"
+required-features = ["bedrock"]
