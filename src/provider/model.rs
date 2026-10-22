@@ -37,11 +37,14 @@ impl Pricing {
     }
 
     /// Cache multipliers Anthropic applies on top of the base input rate.
+    #[allow(dead_code)]
     const CACHE_WRITE_MULTIPLIER: f64 = 1.25;
+    #[allow(dead_code)]
     const CACHE_READ_MULTIPLIER: f64 = 0.10;
 
     /// Fast mode only ever quotes two rates, so its cache rates come off its own
     /// input rate rather than the standard one they no longer relate to.
+    #[allow(dead_code)]
     fn rates(&self, fast: bool) -> (f64, f64, f64, f64) {
         match &self.fast {
             Some(f) if fast => (
