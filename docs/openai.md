@@ -74,6 +74,14 @@ reasoning item in `ContentBlock::Thinking.signature` for stateless replay.
 Requests use `store: false` and include encrypted reasoning content. Do not
 modify signatures or send them through a different protocol.
 
+Reasoning history is never silently omitted. Responses rejects unsigned thinking
+without its original reasoning item. Chat Completions rejects unsigned thinking
+unless the composing provider explicitly enables `reasoning_content` replay;
+Synthetic and Z.AI Coding Plan enable it, native OpenAI does not. Disabling
+thinking for the next generation does not remove prior reasoning from replay.
+Switching to an incompatible protocol requires an explicit caller-side history
+conversion, not an automatic loss of reasoning.
+
 Chat Completions cannot replay Responses reasoning signatures. Unsupported
 signed/redacted content, refusals, provider errors, malformed JSON, and
 prematurely terminated streams return errors rather than silently losing data.

@@ -97,6 +97,11 @@ Preserve opaque reasoning data and signatures needed to replay conversations.
 When a protocol exposes a genuine gap in the common types, extend them
 deliberately rather than silently discarding required data.
 
+History replay is independent of thinking settings for the next generation.
+Adapters must reject reasoning they cannot represent, including unsigned
+thinking without a supported replay field. Redacted payloads are not disposable.
+Any lossy history conversion must be an explicit caller operation.
+
 Keep request work owned by the streaming future so dropping it cancels the
 request. Errors return through the existing result path; an additional error
 event is not required merely because partial events were already emitted.

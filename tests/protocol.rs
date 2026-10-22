@@ -1,16 +1,16 @@
 use animist::{
     protocol::{
-        Protocol, ProtocolInput, Result,
-        openai::{ChatCompletions, OpenAiOptions, Responses},
+        Protocol, ProtocolError, ProtocolInput, Result,
+        openai::{ChatCompletions, OpenAIProtocolError, OpenAiOptions, Responses},
     },
     provider::{
         ContentBlock, Message, MessageKind, Model, ModelInfo, ProviderEvent, RequestOptions, Role,
-        StopReason, StreamResponse, TokenUsage,
+        StopReason, StreamResponse, ThinkingConfig, TokenUsage,
     },
 };
 use async_trait::async_trait;
 use flume::Sender;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 #[test]
 fn protocol_errors_remain_typed_through_the_provider_boundary() {
@@ -129,4 +129,261 @@ fn openai_adapters_share_the_contract_without_sharing_wire_shapes() {
     assert_eq!(responses["instructions"], "Instructions");
     assert_eq!(responses["reasoning"]["effort"], "high");
     assert!(responses.get("messages").is_none());
+}
+
+#[test]
+fn unsigned_reasoning_is_rejected_instead_of_silently_omitted() {
+    for trailing in [
+        vec![],
+        vec![ContentBlock::Text {
+            text: "answer".into(),
+        }],
+        vec![ContentBlock::ToolUse {
+            id: "call-1".into(),
+            name: "lookup".into(),
+            input: json!({}),
+            thought_signature: None,
+        }],
+    ] {
+        let mut content = vec![ContentBlock::Thinking {
+            thinking: "plan".into(),
+            signature: None,
+        }];
+        content.extend(trailing);
+        let messages = vec![
+            Message::builder()
+                .role(Role::Assistant)
+                .kind(MessageKind::Turn)
+                .content(content)
+                .build(),
+        ];
+        let before = serde_json::to_value(&messages).unwrap();
+        let model = Model::default();
+        let options = RequestOptions::default();
+        let input = ProtocolInput::builder()
+            .model(&model)
+            .messages(messages.as_slice())
+            .system("")
+            .tools([].as_slice())
+            .options(&options)
+            .build();
+        assert!(matches!(
+            ChatCompletions.request(input, &OpenAiOptions::default()),
+            Err(ProtocolError::OpenAI {
+                source: OpenAIProtocolError::ChatReasoningReplayDisabled
+            })
+        ));
+        for wire_options in [
+            OpenAiOptions::default(),
+            OpenAiOptions::builder()
+                .replay_reasoning_content(true)
+                .build(),
+        ] {
+            assert!(matches!(
+                Responses.request(input, &wire_options),
+                Err(ProtocolError::OpenAI {
+                    source: OpenAIProtocolError::MissingResponsesReasoningItem
+                })
+            ));
+        }
+        assert_eq!(serde_json::to_value(&messages).unwrap(), before);
+    }
+}
+
+#[test]
+fn chat_reasoning_only_and_tool_loop_history_survive_when_new_thinking_is_off() {
+    let messages = vec![
+        Message::builder()
+            .role(Role::Assistant)
+            .kind(MessageKind::Turn)
+            .content(vec![
+                ContentBlock::Thinking {
+                    thinking: "  first\n".into(),
+                    signature: None,
+                },
+                ContentBlock::Thinking {
+                    thinking: "then 🦀  ".into(),
+                    signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "lookup".into(),
+                    input: json!({"path":"src"}),
+                    thought_signature: None,
+                },
+            ])
+            .build(),
+        Message::builder()
+            .role(Role::User)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".into(),
+                content: "Found".into(),
+                is_error: false,
+                loaded_tools: vec![],
+            }])
+            .build(),
+        Message::builder()
+            .role(Role::Assistant)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::Thinking {
+                thinking: "reasoning-only".into(),
+                signature: None,
+            }])
+            .build(),
+    ];
+    let before = serde_json::to_value(&messages).unwrap();
+    let model = Model::default();
+    for thinking in [ThinkingConfig::Off, ThinkingConfig::Adaptive] {
+        let options = RequestOptions::builder()
+            .thinking(thinking)
+            .fast(false)
+            .build();
+        let input = ProtocolInput::builder()
+            .model(&model)
+            .messages(messages.as_slice())
+            .system("")
+            .tools([].as_slice())
+            .options(&options)
+            .build();
+        let body = ChatCompletions
+            .request(
+                input,
+                &OpenAiOptions::builder()
+                    .replay_reasoning_content(true)
+                    .build(),
+            )
+            .unwrap();
+        assert_eq!(body["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            body["messages"][0]["reasoning_content"],
+            "  first\nthen 🦀  "
+        );
+        assert_eq!(body["messages"][0]["tool_calls"][0]["id"], "call-1");
+        assert_eq!(
+            body["messages"][1],
+            json!({"role":"tool","tool_call_id":"call-1","content":"Found"})
+        );
+        assert_eq!(body["messages"][2]["reasoning_content"], "reasoning-only");
+        assert_eq!(body["messages"][2]["role"], "assistant");
+    }
+    assert_eq!(serde_json::to_value(&messages).unwrap(), before);
+}
+
+#[test]
+fn responses_replays_complete_opaque_items_and_rejects_cross_protocol_conversion() {
+    let item = json!({
+        "type":"reasoning", "id":"rs-1", "encrypted_content":"opaque-not-plain-text",
+        "summary":[{"type":"summary_text","text":"summary","future_field":"preserved"}],
+        "future_metadata":{"preserve":true}
+    });
+    let messages = vec![
+        Message::builder()
+            .role(Role::Assistant)
+            .kind(MessageKind::Turn)
+            .content(vec![
+                ContentBlock::Thinking {
+                    thinking: "summary".into(),
+                    signature: Some(item.to_string()),
+                },
+                ContentBlock::ToolUse {
+                    id: "call-1".into(),
+                    name: "lookup".into(),
+                    input: json!({}),
+                    thought_signature: None,
+                },
+            ])
+            .build(),
+        Message::builder()
+            .role(Role::User)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".into(),
+                content: "Found".into(),
+                is_error: false,
+                loaded_tools: vec![],
+            }])
+            .build(),
+    ];
+    let model = Model::default();
+    let before = serde_json::to_value(&messages).unwrap();
+    for thinking in [ThinkingConfig::Off, ThinkingConfig::Adaptive] {
+        let options = RequestOptions::builder()
+            .thinking(thinking)
+            .fast(false)
+            .build();
+        let input = ProtocolInput::builder()
+            .model(&model)
+            .messages(messages.as_slice())
+            .system("")
+            .tools([].as_slice())
+            .options(&options)
+            .build();
+        let body = Responses.request(input, &OpenAiOptions::default()).unwrap();
+        assert_eq!(body["input"][0], item);
+        assert_eq!(body["input"][1]["call_id"], "call-1");
+        assert_eq!(body["input"][2]["type"], "function_call_output");
+        assert!(matches!(
+            ChatCompletions.request(
+                input,
+                &OpenAiOptions::builder()
+                    .replay_reasoning_content(true)
+                    .build()
+            ),
+            Err(ProtocolError::OpenAI {
+                source: OpenAIProtocolError::UnsupportedChatContent
+            })
+        ));
+    }
+    assert_eq!(serde_json::to_value(&messages).unwrap(), before);
+}
+
+#[test]
+fn redacted_reasoning_is_not_discarded_or_converted_to_text() {
+    use animist::protocol::anthropic::{AnthropicOptions, Messages};
+
+    let messages = [Message::builder()
+        .role(Role::Assistant)
+        .kind(MessageKind::Turn)
+        .content(vec![ContentBlock::RedactedThinking {
+            data: "opaque-redacted-data".into(),
+        }])
+        .build()];
+    let before = serde_json::to_value(&messages).unwrap();
+    let model = Model::default();
+    let options = RequestOptions::default();
+    let input = ProtocolInput::builder()
+        .model(&model)
+        .messages(messages.as_slice())
+        .system("")
+        .tools([].as_slice())
+        .options(&options)
+        .build();
+    let body = Messages
+        .request(input, &AnthropicOptions::default())
+        .unwrap();
+    assert_eq!(
+        body["messages"][0]["content"][0],
+        json!({
+            "type":"redacted_thinking","data":"opaque-redacted-data"
+        })
+    );
+    assert!(matches!(
+        ChatCompletions.request(
+            input,
+            &OpenAiOptions::builder()
+                .replay_reasoning_content(true)
+                .build()
+        ),
+        Err(ProtocolError::OpenAI {
+            source: OpenAIProtocolError::UnsupportedChatContent
+        })
+    ));
+    assert!(matches!(
+        Responses.request(input, &OpenAiOptions::default()),
+        Err(ProtocolError::OpenAI {
+            source: OpenAIProtocolError::UnsupportedResponsesContent
+        })
+    ));
+    assert_eq!(serde_json::to_value(&messages).unwrap(), before);
 }

@@ -10,6 +10,49 @@ use tokio::{
     net::TcpListener,
 };
 
+#[tokio::test]
+async fn incompatible_reasoning_history_fails_before_transport_with_typed_errors() {
+    let messages = [Message::builder()
+        .role(Role::Assistant)
+        .kind(MessageKind::Turn)
+        .content(vec![ContentBlock::Thinking {
+            thinking: "keep this in history".into(),
+            signature: None,
+        }])
+        .build()];
+    let before = serde_json::to_value(&messages).unwrap();
+    for protocol in [Protocol::ChatCompletions, Protocol::Responses] {
+        let (tx, rx) = flume::unbounded();
+        let error = provider("http://127.0.0.1:1/v1", protocol.clone())
+            .stream_message(&model(), &messages, "", &[], &tx, RequestOptions::default())
+            .await
+            .unwrap_err();
+        match (protocol, error) {
+            (
+                Protocol::ChatCompletions,
+                ProviderError::Protocol {
+                    source:
+                        ProtocolError::OpenAI {
+                            source: OpenAIProtocolError::ChatReasoningReplayDisabled,
+                        },
+                },
+            ) => {}
+            (
+                Protocol::Responses,
+                ProviderError::Protocol {
+                    source:
+                        ProtocolError::OpenAI {
+                            source: OpenAIProtocolError::MissingResponsesReasoningItem,
+                        },
+                },
+            ) => {}
+            (_, error) => panic!("unexpected failure: {error:?}"),
+        }
+        assert!(rx.is_empty());
+        assert_eq!(serde_json::to_value(&messages).unwrap(), before);
+    }
+}
+
 async fn server(status: u16, body: String) -> (String, tokio::task::JoinHandle<(String, Value)>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());

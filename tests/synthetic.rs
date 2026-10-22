@@ -65,10 +65,12 @@ fn shared_chat_adapter_replays_reasoning_only_when_enabled() {
         .tools([].as_slice())
         .options(&options)
         .build();
-    let body = ChatCompletions
-        .request(input, &OpenAiOptions::default())
-        .unwrap();
-    assert!(body["messages"][0].get("reasoning_content").is_none());
+    assert!(matches!(
+        ChatCompletions.request(input, &OpenAiOptions::default()),
+        Err(animist::protocol::ProtocolError::OpenAI {
+            source: animist::protocol::openai::OpenAIProtocolError::ChatReasoningReplayDisabled,
+        })
+    ));
     let body = ChatCompletions
         .request(
             input,

@@ -23,6 +23,12 @@ pub enum OpenAIProtocolError {
     DecodeReasoningSignature { source: serde_json::Error },
     #[snafu(display("Reasoning signature is not a Responses reasoning item"))]
     InvalidReasoningSignature,
+    #[snafu(display(
+        "Chat Completions reasoning history requires reasoning_content replay support"
+    ))]
+    ChatReasoningReplayDisabled,
+    #[snafu(display("Responses reasoning history requires its original reasoning item"))]
+    MissingResponsesReasoningItem,
     #[snafu(display("Missing or invalid string field {field}"))]
     MissingStringField { field: &'static str },
     #[snafu(display("Content cannot be replayed through Chat Completions"))]

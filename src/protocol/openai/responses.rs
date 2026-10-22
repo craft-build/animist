@@ -70,7 +70,9 @@ impl Protocol for Responses {
                     }
                     ContentBlock::Thinking {
                         signature: None, ..
-                    } if message.role == Role::Assistant => continue,
+                    } if message.role == Role::Assistant => {
+                        return Err(OpenAIProtocolError::MissingResponsesReasoningItem.into());
+                    }
                     _ => return Err(OpenAIProtocolError::UnsupportedResponsesContent.into()),
                 };
                 if !parts.is_empty() {

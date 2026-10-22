@@ -17,6 +17,7 @@ use serde::Serialize;
 pub struct OpenAiOptions {
     pub reasoning_effort: Option<String>,
     /// Replays unsigned thinking as `reasoning_content` for compatible APIs.
+    /// When disabled, unsigned thinking history returns an error.
     #[builder(default)]
     pub replay_reasoning_content: bool,
     pub chat_thinking: Option<ChatThinking>,

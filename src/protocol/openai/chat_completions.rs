@@ -74,9 +74,11 @@ impl Protocol for ChatCompletions {
                             thinking,
                             signature: None,
                         } if message.role == Role::Assistant => {
-                            if options.replay_reasoning_content {
-                                reasoning.push_str(thinking);
-                            }
+                            ensure!(
+                                options.replay_reasoning_content,
+                                ChatReasoningReplayDisabledSnafu
+                            );
+                            reasoning.push_str(thinking);
                         }
                         _ => return Err(OpenAIProtocolError::UnsupportedChatContent.into()),
                     }
