@@ -1,9 +1,12 @@
 use std::time::Duration;
 
-use animist::provider::{
-    ContentBlock, Message, MessageKind, Model, ModelInfo, Provider, ProviderError, ProviderImpl,
-    RequestOptions, Role, StopReason, ThinkingConfig, Tool,
-    synthetic::{Synthetic, SyntheticConfig},
+use animist::{
+    history::{ContentBlock, Message, MessageKind, Role},
+    provider::{
+        Model, ModelInfo, Provider, ProviderError, ProviderImpl, RequestOptions, StopReason,
+        ThinkingConfig, Tool,
+        synthetic::{Synthetic, SyntheticConfig},
+    },
 };
 use serde_json::{Value, json};
 use tokio::{

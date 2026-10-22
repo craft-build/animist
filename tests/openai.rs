@@ -1,7 +1,8 @@
+use animist::history::{ContentBlock, ImageSource, Message, MessageKind, Role};
 use animist::protocol::{ProtocolError, openai::OpenAIProtocolError};
 use animist::provider::{
-    ContentBlock, ImageSource, Message, MessageKind, Model, ModelInfo, Provider, ProviderError,
-    ProviderEvent, RequestOptions, Role, StopReason, ThinkingConfig, Tool,
+    Model, ModelInfo, Provider, ProviderError, ProviderEvent, RequestOptions, StopReason,
+    ThinkingConfig, Tool,
     openai::{OpenAi, OpenAiConfig, Protocol},
 };
 use serde_json::{Value, json};

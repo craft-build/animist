@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use animist::{
     catalog::Catalog,
+    history::{ContentBlock, Message, MessageKind, Role},
     protocol::{ProtocolError, openai::OpenAIProtocolError},
     provider::{
-        ContentBlock, Effort, Message, MessageKind, Model, ModelInfo, Provider, ProviderError,
-        ProviderEvent, ProviderImpl, RequestOptions, Role, StopReason, ThinkingConfig,
-        ThinkingSupport, Tool,
+        Effort, Model, ModelInfo, Provider, ProviderError, ProviderEvent, ProviderImpl,
+        RequestOptions, StopReason, ThinkingConfig, ThinkingSupport, Tool,
         zai_coding_plan::{ZaiCodingPlan, ZaiCodingPlanConfig},
     },
 };

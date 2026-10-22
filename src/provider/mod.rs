@@ -5,17 +5,15 @@ pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 pub(crate) mod error;
-mod message;
 mod model;
 pub mod openai;
 pub mod synthetic;
 mod tools;
 mod types;
 pub mod zai_coding_plan;
-
+use crate::history::Message;
 pub use error::ProviderError;
 use flume::Sender;
-pub use message::{ContentBlock, ImageSource, Message, MessageKind, Role};
 pub use model::{
     Config, Effort, FastPricing, Features, Model, ModelInfo, Overrides, Pricing, Thinking,
     ThinkingSupport, Tier,

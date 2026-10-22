@@ -12,7 +12,7 @@ pub enum AnthropicProtocolError {
     #[snafu(display("Invalid Anthropic stream event: {source}"))]
     DecodeEvent { source: serde_json::Error },
     #[snafu(display("Content is not supported in an Anthropic {role:?} message"))]
-    UnsupportedContent { role: crate::provider::Role },
+    UnsupportedContent { role: crate::history::Role },
     #[snafu(display("Anthropic thinking replay requires a nonempty signature"))]
     MissingReplaySignature,
     #[snafu(display("Anthropic does not support image media type {media_type}"))]

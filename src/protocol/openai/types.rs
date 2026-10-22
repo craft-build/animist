@@ -4,7 +4,8 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::provider::{Role, TokenUsage};
+use crate::history::Role;
+use crate::provider::TokenUsage;
 
 #[derive(crate::Struct!, Builder, Serialize)]
 #[builder(on(_, into))]

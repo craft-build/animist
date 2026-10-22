@@ -1,7 +1,10 @@
-use animist::provider::{
-    ContentBlock, FastPricing, ImageSource, InputTransformation, Message, MessageKind, Model,
-    ModelInfo, Overrides, Pricing, Provider, ProviderEvent, ProviderImpl, RequestOptions, Result,
-    Role, StopReason, StreamResponse, ThinkingConfig, ThinkingSupport, Tier, TokenUsage, Tool,
+use animist::{
+    history::{ContentBlock, ImageSource, Message, MessageKind, Role},
+    provider::{
+        FastPricing, InputTransformation, Model, ModelInfo, Overrides, Pricing, Provider,
+        ProviderEvent, ProviderImpl, RequestOptions, Result, StopReason, StreamResponse,
+        ThinkingConfig, ThinkingSupport, Tier, TokenUsage, Tool,
+    },
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};

@@ -9,11 +9,9 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::{ChatTokenLimit, OpenAiOptions, error::*, types::*};
 use crate::{
+    history::{ContentBlock, Message, MessageKind, Role},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
-    provider::{
-        ContentBlock, Message, MessageKind, ProviderEvent, Role, StopReason, StreamResponse,
-        TokenUsage,
-    },
+    provider::{ProviderEvent, StopReason, StreamResponse, TokenUsage},
 };
 
 #[derive(crate::Struct!)]
@@ -78,7 +76,7 @@ impl Protocol for ChatCompletions {
                                 options.replay_reasoning_content,
                                 ChatReasoningReplayDisabledSnafu
                             );
-                            reasoning.push_str(thinking);
+                            reasoning.push_str(&thinking);
                         }
                         _ => return Err(OpenAIProtocolError::UnsupportedChatContent.into()),
                     }

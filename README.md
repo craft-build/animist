@@ -7,6 +7,10 @@ Animist is an async Rust library with a common provider interface, streaming
 responses, and model catalog metadata. Applications own conversation management,
 tool execution, and agent orchestration.
 
+> [!WARNING]
+> Animist is pre-1.0. Releases contain breaking changes; each release's
+> [changelog](CHANGELOG.md) will include notices of any breaking changes.
+
 ## Features
 
 - **Shared message types** for text, images, reasoning, tool calls, and tool results.
@@ -34,14 +38,7 @@ Bedrock does not currently implement Converse.
 
 ## Getting started
 
-Use a Rust toolchain that supports edition 2024. To depend on this repository:
-
-```toml
-[dependencies]
-animist = { git = "https://github.com/craft-build/animist" }
-flume = "0.12"
-tokio = { version = "1", features = ["full"] }
-```
+Use a Rust toolchain that supports edition 2024. To depend on this crate.
 
 There are no default Cargo features. Enable `features = ["bedrock"]` on the
 Animist dependency to include the AWS provider and its dependencies.

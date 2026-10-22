@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{AnthropicEffort, AnthropicThinking};
-use crate::provider::{ImageSource, Role};
+use crate::history::{ImageSource, Role};
 
 #[derive(crate::Struct!, Builder, Serialize)]
 #[builder(on(_, into))]

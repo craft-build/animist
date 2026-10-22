@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use bon::Builder;
 use flume::Sender;
 
-use crate::provider::{Message, Model, ProviderEvent, RequestOptions, StreamResponse, Tool};
+use crate::history::Message;
+use crate::provider::{Model, ProviderEvent, RequestOptions, StreamResponse, Tool};
 
 pub mod anthropic;
 mod error;

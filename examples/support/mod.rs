@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 
 use animist::{
     catalog::{Catalog, ProviderCatalog},
+    history::{ContentBlock, Message, MessageKind, Role},
     provider::{
-        ContentBlock, Effort, Message, MessageKind, Model, ModelInfo, Provider, ProviderEvent,
-        RequestOptions, Role, StopReason, ThinkingConfig, Tool,
+        Effort, Model, ModelInfo, Provider, ProviderEvent, RequestOptions, StopReason,
+        ThinkingConfig, Tool,
     },
 };
 use serde_json::json;

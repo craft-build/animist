@@ -9,11 +9,9 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::{OpenAiOptions, error::*, types::*};
 use crate::{
+    history::{ContentBlock, Message, MessageKind, Role},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
-    provider::{
-        ContentBlock, Message, MessageKind, ProviderEvent, Role, StopReason, StreamResponse,
-        ThinkingConfig, TokenUsage,
-    },
+    provider::{ProviderEvent, StopReason, StreamResponse, ThinkingConfig, TokenUsage},
 };
 
 #[derive(crate::Struct!)]
@@ -63,7 +61,7 @@ impl Protocol for Responses {
                         signature: Some(signature),
                         ..
                     } if message.role == Role::Assistant => {
-                        let item: Value = serde_json::from_str(signature)
+                        let item: Value = serde_json::from_str(&signature)
                             .context(DecodeReasoningSignatureSnafu)?;
                         ensure!(item["type"] == "reasoning", InvalidReasoningSignatureSnafu);
                         serde_json::from_value(item).context(DecodeReasoningSignatureSnafu)?

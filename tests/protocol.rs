@@ -1,11 +1,12 @@
 use animist::{
+    history::{ContentBlock, Message, MessageKind, Role},
     protocol::{
         Protocol, ProtocolError, ProtocolInput, Result,
         openai::{ChatCompletions, OpenAIProtocolError, OpenAiOptions, Responses},
     },
     provider::{
-        ContentBlock, Message, MessageKind, Model, ModelInfo, ProviderEvent, RequestOptions, Role,
-        StopReason, StreamResponse, ThinkingConfig, TokenUsage,
+        Model, ModelInfo, ProviderEvent, RequestOptions, StopReason, StreamResponse,
+        ThinkingConfig, TokenUsage,
     },
 };
 use async_trait::async_trait;

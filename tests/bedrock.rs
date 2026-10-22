@@ -11,11 +11,11 @@ use std::{
 
 use animist::{
     catalog::Catalog,
+    history::{ContentBlock, Message, MessageKind, Role},
     protocol::{ProtocolError, anthropic::AnthropicProtocolError, openai::OpenAIProtocolError},
     provider::{
-        ContentBlock, Effort, Message, MessageKind, Model, ModelInfo, Provider, ProviderError,
-        ProviderEvent, ProviderImpl, RequestOptions, Role, StopReason, ThinkingConfig,
-        ThinkingSupport,
+        Effort, Model, ModelInfo, Provider, ProviderError, ProviderEvent, ProviderImpl,
+        RequestOptions, StopReason, ThinkingConfig, ThinkingSupport,
         bedrock::{
             Bedrock, BedrockConfig, BedrockError, Credentials, CredentialsError, CredentialsFuture,
             Protocol, ProvideCredentials, Region, SdkConfig, SharedCredentialsProvider,

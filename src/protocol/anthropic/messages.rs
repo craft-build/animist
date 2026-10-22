@@ -8,11 +8,9 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::{AnthropicOptions, error::*, types::*};
 use crate::{
+    history::{ContentBlock, ImageSource, Message, MessageKind, Role},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
-    provider::{
-        ContentBlock, ImageSource, Message, MessageKind, ProviderEvent, Role, StopReason,
-        StreamResponse, TokenUsage,
-    },
+    provider::{ProviderEvent, StopReason, StreamResponse, TokenUsage},
 };
 
 #[derive(crate::Struct!)]
