@@ -20,6 +20,16 @@ pub enum ImageSource {
 }
 
 impl ImageSource {
+    /// Returns the remote URL or a data URL for inline image content.
+    pub fn to_url(&self) -> String {
+        match self {
+            Self::Url { url } => url.clone(),
+            Self::Base64 { media_type, data } => {
+                format!("data:{media_type};base64,{data}")
+            }
+        }
+    }
+
     /// Encodes raw image bytes using standard padded base64.
     pub fn from_bytes(media_type: impl Into<String>, bytes: &[u8]) -> Self {
         Self::Base64 {

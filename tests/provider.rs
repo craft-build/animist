@@ -65,6 +65,14 @@ fn image_sources_round_trip() {
     assert_eq!(media_type, "image/png");
     assert_eq!(STANDARD.decode(data).unwrap(), bytes);
     assert_eq!(data, "iVBORw0KGgo=");
+    assert_eq!(source.to_url(), "data:image/png;base64,iVBORw0KGgo=");
+    assert_eq!(
+        ImageSource::Url {
+            url: "https://example.com/image.png".into()
+        }
+        .to_url(),
+        "https://example.com/image.png"
+    );
 
     for source in [
         source,

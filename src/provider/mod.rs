@@ -1,13 +1,14 @@
 use arc_handle::arc_handle;
 use async_trait::async_trait;
 
-mod error;
+pub(crate) mod error;
 mod message;
 mod model;
+pub mod openai;
 mod tools;
 mod types;
 
-pub use error::Error;
+pub use error::ProviderError;
 use flume::Sender;
 pub use message::{ContentBlock, ImageSource, Message, MessageKind, Role};
 pub use model::{
@@ -20,7 +21,7 @@ pub use types::{
     TokenUsage,
 };
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = std::result::Result<T, ProviderError>;
 
 #[arc_handle]
 #[async_trait]

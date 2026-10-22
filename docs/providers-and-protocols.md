@@ -2,10 +2,10 @@
 
 ## Status and scope
 
-Agreed architectural direction for future provider implementation. The catalog
-and public provider interface exist; the protocol adapters described here do not
-yet exist. Module names and any shared internal traits remain implementation
-decisions, not a prescribed framework.
+The catalog and public provider interface are implemented. OpenAI's provider
+and its Chat Completions and Responses adapters are implemented; see
+[OpenAI usage](openai.md). Other adapters below remain future work.
+The public `protocol::Protocol` async trait defines the shared adapter contract.
 
 ## Decision
 
@@ -32,6 +32,26 @@ Initial protocol boundaries to consider:
 
 These are independent adapters, not variants forced into a single universal
 request schema or lifecycle.
+
+### Protocol contract
+
+`protocol::Protocol` is `Send + Sync` and uses `async-trait`. It translates a
+borrowed `ProtocolInput` into an associated request type, then asynchronously
+assembles an associated transport response into common events and a result.
+Associated options carry protocol-specific settings resolved by provider policy.
+The contract does not require JSON, HTTP, or SSE for future implementations.
+
+OpenAI's stateless `ChatCompletions` and `Responses` implementations live under
+`protocol::openai`, alongside their private Serde wire types.
+The shared HTTP SSE reader lives in `protocol::sse` and reports `SseError`.
+Their mutable stream state belongs to each assembly future; no shared handle or
+lock is needed. Providers own routing and transport and invoke the selected
+adapter through the trait.
+
+Protocols return `ProtocolError`, which transparently wraps concrete errors such
+as `openai::OpenAIProtocolError`. The provider boundary returns `ProviderError`,
+with a transparent `ProtocolError` variant. Structured failure variants preserve
+source errors and protocol context without depending on provider error types.
 
 ## Responsibilities
 
@@ -82,8 +102,8 @@ event is not required merely because partial events were already emitted.
 2. Place wire types, translation, and stream assembly in the protocol module.
 3. Keep authentication, endpoints, and model policy in the provider.
 4. Add a second provider using that protocol to validate the reuse boundary.
-5. Extract internal traits or shared transport machinery only when actual
-   implementations demonstrate a useful common contract.
+5. Extend the protocol contract or extract shared transport machinery only when
+   concrete implementations demonstrate the need.
 
 Test protocol translation and stream assembly with deterministic fixtures,
 including interleaved tool calls, partial JSON, reasoning signatures, usage,
