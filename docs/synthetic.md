@@ -69,6 +69,7 @@ Events emitted before an error remain available.
 
 ## References
 
+- [Runnable manual tests](manual-provider-tests.md)
 - https://dev.synthetic.new/docs/api/overview
 - https://dev.synthetic.new/docs/openai/chat-completions
 - https://dev.synthetic.new/docs/openai/models

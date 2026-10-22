@@ -70,6 +70,7 @@ back to a different billing endpoint.
 
 ## References
 
+- [Runnable manual tests](manual-provider-tests.md)
 - https://docs.z.ai/devpack/tool/others
 - https://docs.z.ai/devpack/notice/api-key-management
 - https://docs.z.ai/api-reference/llm/chat-completion
