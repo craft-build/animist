@@ -4,9 +4,9 @@
 
 The catalog and public provider interface are implemented. OpenAI's provider
 supports Chat Completions and Responses; Anthropic's provider supports Messages.
-Synthetic reuses the OpenAI Chat Completions adapter.
-See [OpenAI usage](openai.md), [Anthropic usage](anthropic.md), and
-[Synthetic usage](synthetic.md).
+Synthetic and Z.AI Coding Plan reuse the OpenAI Chat Completions adapter.
+See [OpenAI usage](openai.md), [Anthropic usage](anthropic.md),
+[Synthetic usage](synthetic.md), and [Z.AI Coding Plan usage](zai-coding-plan.md).
 Other adapters below remain future work.
 The public `protocol::Protocol` async trait defines the shared adapter contract.
 

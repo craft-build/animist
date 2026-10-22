@@ -9,6 +9,7 @@ pub mod openai;
 pub mod synthetic;
 mod tools;
 mod types;
+pub mod zai_coding_plan;
 
 pub use error::ProviderError;
 use flume::Sender;

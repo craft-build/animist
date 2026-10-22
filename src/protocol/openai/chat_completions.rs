@@ -7,7 +7,7 @@ use flume::Sender;
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 
-use super::{OpenAiOptions, error::*, types::*};
+use super::{ChatTokenLimit, OpenAiOptions, error::*, types::*};
 use crate::{
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
     provider::{
@@ -125,8 +125,18 @@ impl Protocol for ChatCompletions {
                 input
                     .options
                     .max_output_tokens
-                    .or(input.model.info.config.max_output_tokens),
+                    .or(input.model.info.config.max_output_tokens)
+                    .filter(|_| options.chat_token_limit == ChatTokenLimit::MaxCompletionTokens),
             )
+            .maybe_max_tokens(
+                input
+                    .options
+                    .max_output_tokens
+                    .or(input.model.info.config.max_output_tokens)
+                    .filter(|_| options.chat_token_limit == ChatTokenLimit::MaxTokens),
+            )
+            .maybe_thinking(options.chat_thinking.clone())
+            .maybe_tool_stream(options.tool_stream)
             .maybe_reasoning_effort(options.reasoning_effort.clone())
             .maybe_service_tier(input.options.fast.then_some(ServiceTier::Priority))
             .build();
