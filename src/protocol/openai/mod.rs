@@ -15,4 +15,7 @@ pub use responses::Responses;
 #[builder(on(_, into))]
 pub struct OpenAiOptions {
     pub reasoning_effort: Option<String>,
+    /// Replays unsigned thinking as `reasoning_content` for compatible APIs.
+    #[builder(default)]
+    pub replay_reasoning_content: bool,
 }

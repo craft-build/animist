@@ -15,7 +15,7 @@ pub enum ProviderError {
     EmptyApiKey,
     #[snafu(display("This model requires reasoning"))]
     ReasoningRequired,
-    #[snafu(display("OpenAI does not support reasoning token budgets"))]
+    #[snafu(display("Provider does not support reasoning token budgets"))]
     ReasoningBudgetUnsupported,
     #[snafu(display("Unsupported reasoning effort {effort:?}"))]
     UnsupportedReasoningEffort { effort: super::Effort },
@@ -48,4 +48,15 @@ pub enum ProviderError {
     MissingModelCursor,
     #[snafu(display("Paginated model listing repeated cursor {cursor}"))]
     RepeatedModelCursor { cursor: String },
+    #[snafu(display("Invalid Synthetic model listing: {source}"))]
+    DecodeSyntheticModels { source: serde_json::Error },
+    #[snafu(display("Invalid Synthetic price for {field}: {value}"))]
+    InvalidSyntheticPrice {
+        field: &'static str,
+        value: serde_json::Value,
+    },
+    #[snafu(display("Provider {provider} does not support fast mode"))]
+    FastModeUnsupported { provider: String },
+    #[snafu(display("Maximum output token limit must be positive"))]
+    ZeroOutputTokenLimit,
 }

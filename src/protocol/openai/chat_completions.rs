@@ -47,6 +47,7 @@ impl Protocol for ChatCompletions {
             {
                 let mut content = Vec::new();
                 let mut calls = Vec::new();
+                let mut reasoning = String::new();
                 for block in segment {
                     match block {
                         ContentBlock::Text { text } => {
@@ -70,17 +71,23 @@ impl Protocol for ChatCompletions {
                         }),
                         ContentBlock::ToolResult { .. } if message.role == Role::User => {}
                         ContentBlock::Thinking {
-                            signature: None, ..
-                        } if message.role == Role::Assistant => {}
+                            thinking,
+                            signature: None,
+                        } if message.role == Role::Assistant => {
+                            if options.replay_reasoning_content {
+                                reasoning.push_str(thinking);
+                            }
+                        }
                         _ => return Err(OpenAIProtocolError::UnsupportedChatContent.into()),
                     }
                 }
-                if !content.is_empty() || !calls.is_empty() {
+                if !content.is_empty() || !calls.is_empty() || !reasoning.is_empty() {
                     messages.push(match message.role {
                         Role::User => ChatMessage::User { content },
                         Role::Assistant => ChatMessage::Assistant {
                             content: (!content.is_empty()).then_some(content),
                             tool_calls: calls,
+                            reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
                         },
                     });
                 }
@@ -133,6 +140,7 @@ impl Protocol for ChatCompletions {
     ) -> Result<StreamResponse> {
         let mut events = Events::new(response);
         let mut content = String::new();
+        let mut reasoning = String::new();
         let mut calls: BTreeMap<u64, Call> = BTreeMap::new();
         let mut usage = TokenUsage::default();
         let mut stop = None;
@@ -161,7 +169,14 @@ impl Protocol for ChatCompletions {
                     }
                 );
                 let delta = choice.delta;
-                if let Some(piece) = delta.content {
+                if let Some(piece) = delta.reasoning_content.filter(|piece| !piece.is_empty()) {
+                    reasoning.push_str(&piece);
+                    event_tx
+                        .send_async(ProviderEvent::ThinkingDelta { text: piece })
+                        .await
+                        .context(EventReceiverSnafu)?;
+                }
+                if let Some(piece) = delta.content.filter(|piece| !piece.is_empty()) {
                     content.push_str(&piece);
                     event_tx
                         .send_async(ProviderEvent::TextDelta { text: piece })
@@ -178,7 +193,15 @@ impl Protocol for ChatCompletions {
                         if let Some(name) = delta.function.name {
                             call.name.push_str(&name);
                         }
-                        if !call.started && !call.id.is_empty() && !call.name.is_empty() {
+                        if !call.started
+                            && !call.id.is_empty()
+                            && !call.name.is_empty()
+                            && delta
+                                .function
+                                .arguments
+                                .as_ref()
+                                .is_some_and(|piece| !piece.is_empty())
+                        {
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: call.id.clone(),
@@ -188,7 +211,9 @@ impl Protocol for ChatCompletions {
                                 .context(EventReceiverSnafu)?;
                             call.started = true;
                         }
-                        if let Some(piece) = delta.function.arguments {
+                        if let Some(piece) =
+                            delta.function.arguments.filter(|piece| !piece.is_empty())
+                        {
                             ensure!(
                                 call.started,
                                 ToolArgumentsBeforeIdentitySnafu { index: delta.index }
@@ -205,6 +230,18 @@ impl Protocol for ChatCompletions {
                     }
                 }
                 if let Some(reason) = choice.finish_reason {
+                    for call in calls.values_mut() {
+                        if !call.started && !call.id.is_empty() && !call.name.is_empty() {
+                            event_tx
+                                .send_async(ProviderEvent::ToolUseStart {
+                                    id: call.id.clone(),
+                                    name: call.name.clone(),
+                                })
+                                .await
+                                .context(EventReceiverSnafu)?;
+                            call.started = true;
+                        }
+                    }
                     stop = Some(match reason.as_str() {
                         "stop" => StopReason::EndTurn,
                         "tool_calls" => StopReason::ToolUse,
@@ -221,6 +258,12 @@ impl Protocol for ChatCompletions {
         ensure!(done, TruncatedChatStreamSnafu);
         let stop = stop.context(MissingFinishReasonSnafu)?;
         let mut blocks = Vec::new();
+        if !reasoning.is_empty() {
+            blocks.push(ContentBlock::Thinking {
+                thinking: reasoning,
+                signature: None,
+            });
+        }
         if !content.is_empty() {
             blocks.push(ContentBlock::Text { text: content });
         }

@@ -42,6 +42,8 @@ pub(super) enum ChatMessage {
         content: Option<Vec<ChatContent>>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ChatCall>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
     },
     Tool {
         tool_call_id: String,
@@ -192,6 +194,7 @@ pub(super) struct Choice {
 #[derive(crate::Struct!, Deserialize)]
 pub(super) struct Delta {
     pub content: Option<String>,
+    pub reasoning_content: Option<String>,
     pub refusal: Option<String>,
     pub tool_calls: Option<Vec<ToolDelta>>,
 }

@@ -6,6 +6,7 @@ pub(crate) mod error;
 mod message;
 mod model;
 pub mod openai;
+pub mod synthetic;
 mod tools;
 mod types;
 
