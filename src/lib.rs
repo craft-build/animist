@@ -23,5 +23,7 @@ pub enum Error {
     #[snafu(transparent)]
     Provider { source: ProviderError },
     #[snafu(transparent)]
-    Other { source: Box<dyn std::error::Error> },
+    Other {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
