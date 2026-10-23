@@ -62,6 +62,20 @@ Protocol errors retain the existing concrete-to-protocol-to-provider layering.
 Embedding model IDs are currently explicit. Existing chat discovery semantics
 are unchanged; mixed-operation catalogs and embedding pricing are future work.
 
+### Decision models
+
+`provider::DeciderProvider` provides typed choice, score, and boolean questions
+independently of chat and embeddings. `LlamaCpp` implements it using the
+TypeSafe-compatible `/v1/systemone` endpoint on direct servers and routers.
+`protocol::DeciderProtocol` is the non-streaming adapter contract;
+`protocol::system_one::SystemOne` owns wire translation and answer validation.
+`SystemOneError` is transparently linked through `ProtocolError`.
+
+Applications retain named answers, model probabilities, confidence, score
+legends, and usage. They own thresholds and action execution. Models are selected
+by explicit IDs rather than inferred from names. See [decision models](deciders.md)
+for API examples, media support, and model-dependent serving requirements.
+
 ### Protocol contract
 
 `protocol::Protocol` is `Send + Sync` and uses `async-trait`. It translates a

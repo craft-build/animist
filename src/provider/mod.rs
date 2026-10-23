@@ -4,6 +4,7 @@ use async_trait::async_trait;
 pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+mod decider;
 mod embedding;
 pub(crate) mod error;
 pub mod llama_cpp;
@@ -16,6 +17,10 @@ mod tools;
 mod types;
 pub mod zai_coding_plan;
 use crate::history::Message;
+pub use decider::{
+    BooleanCriteria, DeciderModel, DeciderProvider, DeciderProviderImpl, DecisionAnswer,
+    DecisionQuestion, DecisionRequest, DecisionResponse, DecisionUsage,
+};
 pub use embedding::{
     EmbeddingModel, EmbeddingProvider, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse,
     EmbeddingUsage,

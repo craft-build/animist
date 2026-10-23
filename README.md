@@ -19,6 +19,8 @@ tool execution, and agent orchestration.
 - **Provider-independent application code** through a clonable `Provider` handle.
 - **Text embeddings** through a separate `EmbeddingProvider` handle, with Synthetic,
   llama.cpp, Ollama, and oMLX support, batched inputs, and validated vector dimensions.
+- **Typed decisions** through `DeciderProvider`, with llama.cpp System One support
+  for choice, score, and yes/no probability questions.
 - **Reusable protocol adapters** for OpenAI Responses, OpenAI Chat Completions,
   and Anthropic Messages.
 - **Model catalogs** loaded from models.dev or a saved API document, retaining
@@ -31,7 +33,7 @@ tool execution, and agent orchestration.
 | --- | --- | --- |
 | OpenAI | Responses (default), Chat Completions | [OpenAI](docs/openai.md) |
 | Ollama (local server) | OpenAI Chat Completions, Embeddings with Ollama compatibility policy | [Ollama](docs/ollama.md) |
-| llama.cpp (single-model or router) | OpenAI Chat Completions, Embeddings with llama.cpp compatibility policy | [llama.cpp](docs/llama-cpp.md) |
+| llama.cpp (single-model or router) | OpenAI Chat Completions, Embeddings, System One decisions | [llama.cpp](docs/llama-cpp.md) |
 | oMLX | OpenAI Chat Completions with oMLX thinking policy, Embeddings | [oMLX](docs/omlx.md) |
 | Anthropic | Messages | [Anthropic](docs/anthropic.md) |
 | Synthetic | OpenAI Chat Completions, Embeddings | [Synthetic](docs/synthetic.md) |
@@ -160,6 +162,7 @@ endpoints.
 
 See [providers and protocols](docs/providers-and-protocols.md) for the architecture,
 responsibility boundaries, and implementation guidance.
+See [decision models](docs/deciders.md) for the non-streaming typed decision API.
 
 ## Development
 

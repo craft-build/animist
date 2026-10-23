@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use super::*;
 use crate::protocol::{
-    EmbeddingProtocol, Protocol, ProtocolInput,
+    DeciderProtocol, EmbeddingProtocol, Protocol, ProtocolInput,
     openai::{ChatCompletions, ChatTokenLimit, OpenAiOptions},
 };
 
@@ -288,6 +288,41 @@ impl EmbeddingProviderImpl for LlamaCpp {
             .send(reqwest::Method::POST, "embeddings", Some(body))
             .await?;
         Ok(protocol.assemble(response, model, request).await?)
+    }
+
+    async fn refresh_auth(&self) -> Result<()> {
+        ProviderImpl::refresh_auth(self).await
+    }
+
+    async fn reload_auth(&self) -> Result<()> {
+        ProviderImpl::reload_auth(self).await
+    }
+}
+
+#[async_trait]
+impl DeciderProviderImpl for LlamaCpp {
+    fn name(&self) -> &str {
+        "llama-cpp"
+    }
+
+    async fn decide(
+        &self,
+        model: &DeciderModel,
+        request: &DecisionRequest,
+    ) -> Result<DecisionResponse> {
+        ensure!(
+            model.provider == DeciderProviderImpl::name(self),
+            error::ModelProviderMismatchSnafu {
+                expected: DeciderProviderImpl::name(self),
+                actual: &model.provider,
+            }
+        );
+        let protocol = crate::protocol::system_one::SystemOne;
+        let body = protocol.request(model, request)?;
+        let response = self
+            .send(reqwest::Method::POST, "systemone", Some(body))
+            .await?;
+        Ok(protocol.assemble(response, request).await?)
     }
 
     async fn refresh_auth(&self) -> Result<()> {

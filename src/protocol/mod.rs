@@ -8,11 +8,14 @@ use crate::history::Message;
 use crate::provider::{Model, ProviderEvent, RequestOptions, StreamResponse, Tool};
 
 pub mod anthropic;
+mod decider;
 mod embedding;
 mod error;
 pub mod openai;
 pub(crate) mod sse;
+pub mod system_one;
 
+pub use decider::DeciderProtocol;
 pub use embedding::EmbeddingProtocol;
 pub use error::ProtocolError;
 pub use sse::SseError;

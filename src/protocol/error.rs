@@ -5,6 +5,10 @@ use super::openai::OpenAIProtocolError;
 #[derive(Debug, Snafu)]
 pub enum ProtocolError {
     #[snafu(transparent)]
+    SystemOne {
+        source: super::system_one::SystemOneError,
+    },
+    #[snafu(transparent)]
     Anthropic {
         source: super::anthropic::AnthropicProtocolError,
     },

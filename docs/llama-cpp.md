@@ -74,6 +74,21 @@ Embedding model IDs and dimensions remain explicit, not inferred from names or
 chat catalog metadata. See the [Synthetic embedding example](synthetic.md#embeddings)
 for the shared request/response API.
 
+## Decision models
+
+`LlamaCpp` implements `DeciderProviderImpl` using `/v1/systemone`. Direct servers
+and routers use the same adapter and ordinary `model` field. Chat, embedding,
+and decision handles can share the same `Arc<LlamaCpp>`.
+
+Choose a native decision model and construct `DeciderModel` with provider
+`"llama-cpp"`. The server supports named choice, score, and yes/no probability
+questions; these are not chat completions. Native decision support is advertised
+through `architecture.output_modalities: ["decisions"]`, potentially alongside
+`"text"`. Animist's decision model IDs remain explicit.
+
+See [decision models](deciders.md) for examples, answer validation, optional
+inline media, model-dependent limits, and cancellation behavior.
+
 ## Request policy
 
 - Output limits use `max_tokens`: request options first, then model metadata,
