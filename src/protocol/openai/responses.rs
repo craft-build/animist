@@ -61,7 +61,7 @@ impl Protocol for Responses {
                         signature: Some(signature),
                         ..
                     } if message.role == Role::Assistant => {
-                        let item: Value = serde_json::from_str(&signature)
+                        let item: Value = serde_json::from_str(signature)
                             .context(DecodeReasoningSignatureSnafu)?;
                         ensure!(item["type"] == "reasoning", InvalidReasoningSignatureSnafu);
                         serde_json::from_value(item).context(DecodeReasoningSignatureSnafu)?

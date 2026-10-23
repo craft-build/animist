@@ -76,7 +76,7 @@ impl Protocol for ChatCompletions {
                                 options.replay_reasoning_content,
                                 ChatReasoningReplayDisabledSnafu
                             );
-                            reasoning.push_str(&thinking);
+                            reasoning.push_str(thinking);
                         }
                         _ => return Err(OpenAIProtocolError::UnsupportedChatContent.into()),
                     }
