@@ -9,7 +9,7 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::*;
 use crate::protocol::{
-    Protocol, ProtocolInput,
+    EmbeddingProtocol, Protocol, ProtocolInput,
     openai::{ChatCompletions, ChatReasoningField, ChatTokenLimit, OpenAiOptions},
 };
 
@@ -60,7 +60,16 @@ impl Ollama {
             format!("{}/{}", self.config.base_url.trim_end_matches('/'), path),
         );
         if let Some(body) = body {
-            request = request.header("Accept", "text/event-stream").json(&body);
+            request = request
+                .header(
+                    "Accept",
+                    if path == "chat/completions" {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
+                .json(&body);
         }
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
@@ -88,16 +97,16 @@ impl ProviderImpl for Ollama {
         options: RequestOptions,
     ) -> Result<StreamResponse> {
         ensure!(
-            model.provider.as_ref() == self.name(),
+            model.provider.as_ref() == ProviderImpl::name(self),
             error::ModelProviderMismatchSnafu {
-                expected: self.name(),
+                expected: ProviderImpl::name(self),
                 actual: model.provider.as_ref(),
             }
         );
         ensure!(
             !options.fast && model.overrides.fast != Some(true),
             error::FastModeUnsupportedSnafu {
-                provider: self.name()
+                provider: ProviderImpl::name(self)
             }
         );
         let thinking = &model.info.features.thinking;
@@ -185,5 +194,40 @@ impl ProviderImpl for Ollama {
 
     async fn reload_auth(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl EmbeddingProviderImpl for Ollama {
+    fn name(&self) -> &str {
+        "ollama"
+    }
+
+    async fn embed(
+        &self,
+        model: &EmbeddingModel,
+        request: &EmbeddingRequest,
+    ) -> Result<EmbeddingResponse> {
+        ensure!(
+            model.provider == EmbeddingProviderImpl::name(self),
+            error::ModelProviderMismatchSnafu {
+                expected: EmbeddingProviderImpl::name(self),
+                actual: &model.provider,
+            }
+        );
+        let protocol = crate::protocol::openai::Embeddings;
+        let body = protocol.request(model, request)?;
+        let response = self
+            .send(reqwest::Method::POST, "embeddings", Some(body))
+            .await?;
+        Ok(protocol.assemble(response, model, request).await?)
+    }
+
+    async fn refresh_auth(&self) -> Result<()> {
+        ProviderImpl::refresh_auth(self).await
+    }
+
+    async fn reload_auth(&self) -> Result<()> {
+        ProviderImpl::reload_auth(self).await
     }
 }

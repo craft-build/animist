@@ -6,6 +6,34 @@ use crate::provider::{ProviderEvent, StopReason};
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum OpenAIProtocolError {
+    #[snafu(display("Embedding input batch must not be empty"))]
+    EmptyEmbeddingInput,
+    #[snafu(display("Embedding dimensions must be positive"))]
+    ZeroEmbeddingDimensions,
+    #[snafu(display(
+        "Requested embedding dimensions {requested} conflict with expected width {expected}"
+    ))]
+    EmbeddingDimensionConflict { expected: u32, requested: u32 },
+    #[snafu(display("Failed to read embeddings response: {source}"))]
+    ReadEmbeddings { source: reqwest::Error },
+    #[snafu(display("Invalid embeddings response: {source}"))]
+    DecodeEmbeddings { source: serde_json::Error },
+    #[snafu(display("Embedding index {index} is outside input count {count}"))]
+    EmbeddingIndexOutOfRange { index: usize, count: usize },
+    #[snafu(display("Duplicate embedding index {index}"))]
+    DuplicateEmbeddingIndex { index: usize },
+    #[snafu(display("Missing embedding index {index}"))]
+    MissingEmbedding { index: usize },
+    #[snafu(display(
+        "Embedding {index} has {actual} dimensions, expected {expected} positive dimensions"
+    ))]
+    EmbeddingDimensions {
+        index: usize,
+        expected: usize,
+        actual: usize,
+    },
+    #[snafu(display("Embedding {index} contains non-finite values"))]
+    NonFiniteEmbedding { index: usize },
     #[snafu(display("Failed to serialize OpenAI request: {source}"))]
     EncodeRequest { source: serde_json::Error },
     #[snafu(display("Invalid OpenAI usage: {source}"))]

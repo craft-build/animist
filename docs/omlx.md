@@ -69,6 +69,30 @@ Output limits use `max_tokens`: request options first, then model metadata,
 otherwise server defaults. Zero limits and fast mode are rejected; OpenAI
 priority service tiers are not applicable.
 
+## Embeddings
+
+`Omlx` also implements `EmbeddingProviderImpl` through its OpenAI-compatible
+`/v1/embeddings` endpoint. Select a supported embedding model using provider
+`"omlx"` and its exact server ID. The engine pool handles loading and routing;
+Animist does not manage models.
+
+Use `EmbeddingProvider::new(Omlx::new(config)?)`, or construct chat and embedding
+handles from the same `Arc<Omlx>` to share credentials and the HTTP client.
+The existing optional authentication and credential reload rules also apply to
+embeddings. Batched text and optional requested dimensions use the shared adapter.
+
+Set `EmbeddingModel::expected_dimensions` to pin the required output width,
+independently of the optional resizing request. Conflicts fail before HTTP;
+returned width mismatches fail during response validation. oMLX can reduce
+dimensions and renormalize on the server; requests larger than the native width
+may return the full vector, which Animist rejects as a dimension mismatch.
+
+oMLX defaults to truncating overlong embedding inputs. This provider currently
+uses server defaults for truncation and token limits; it does not expose native
+`truncation` or `max_length` controls. Multimodal embeddings are not exposed.
+Embedding IDs and widths are explicit, not derived from chat metadata.
+See the [Synthetic embedding example](synthetic.md#embeddings) for shared types.
+
 ## Streaming and history
 
 Text, user images, function tools, tool results, usage, stop reasons, and thinking
@@ -77,7 +101,7 @@ deltas use the shared adapter. Complete unsigned thinking history is replayed as
 Signed/redacted reasoning from incompatible protocols is rejected, not dropped.
 The model's template ultimately controls how replayed reasoning is rendered.
 
-Responses, Anthropic Messages, embeddings, reranking, server-side tools, model
+Responses, Anthropic Messages, reranking, server-side tools, model
 management, and cache administration are not exposed by this provider.
 Model loading, eviction, and caching remain managed by oMLX.
 
@@ -89,3 +113,5 @@ See [upstream oMLX](https://github.com/jundot/omlx) for server setup and policy.
 request policy, streamed tool/reasoning replay, and error boundaries against
 local HTTP/SSE fixtures. It does not run a live oMLX engine or download models.
 Server-version and model/template compatibility require a separate smoke test.
+`cargo test --test embedding` covers embedding routing, authentication,
+dimension validation, and HTTP errors against local mock servers.

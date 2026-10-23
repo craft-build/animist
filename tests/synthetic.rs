@@ -19,6 +19,315 @@ use tokio::{
 const FIXTURE: &str = include_str!("fixtures/synthetic.sse");
 
 #[tokio::test]
+async fn dropping_embedding_future_cancels_response_body_read() {
+    use animist::provider::{EmbeddingModel, EmbeddingProvider, EmbeddingRequest};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider = EmbeddingProvider::new(
+        Synthetic::new(
+            SyntheticConfig::builder()
+                .base_url(format!("http://{}", listener.local_addr().unwrap()))
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    );
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        read_request(&mut socket).await;
+        socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n{\"model\":").await.unwrap();
+        ready_tx.send(()).unwrap();
+        let mut byte = [0];
+        match timeout(Duration::from_secs(5), socket.read(&mut byte))
+            .await
+            .unwrap()
+        {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            result => panic!("expected a closed connection, got {result:?}"),
+        }
+    });
+    let model = EmbeddingModel::builder()
+        .id("embedding")
+        .provider("synthetic")
+        .build();
+    let input = EmbeddingRequest::builder()
+        .input(vec!["text".into()])
+        .build();
+    let mut request = Box::pin(provider.embed(&model, &input));
+    tokio::select! {
+        result = &mut request => panic!("request unexpectedly finished: {result:?}"),
+        _ = ready_rx => {}
+    }
+    drop(request);
+    timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn embedding_handles_share_synthetic_and_return_input_order() {
+    use std::sync::Arc;
+
+    use animist::provider::{EmbeddingModel, EmbeddingProvider, EmbeddingRequest};
+
+    let body = json!({
+        "model": "hf:resolved",
+        "data": [
+            {"index": 1, "embedding": [0.3, 0.4]},
+            {"index": 0, "embedding": [0.1, 0.2]}
+        ],
+        "usage": {"prompt_tokens": 8, "total_tokens": 8}
+    });
+    let (url, task) = server("200 OK", "application/json", &body.to_string()).await;
+    let synthetic = Arc::new(
+        Synthetic::new(
+            SyntheticConfig::builder()
+                .base_url(url)
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    );
+    let chat = Provider::from_arc(synthetic.clone());
+    let embeddings = EmbeddingProvider::from_arc(synthetic);
+    assert_eq!(
+        Arc::as_ptr(chat.inner()) as *const (),
+        Arc::as_ptr(embeddings.inner()) as *const ()
+    );
+    let model = EmbeddingModel::builder()
+        .id("hf:nomic-ai/nomic-embed-text-v1.5")
+        .provider("synthetic")
+        .build();
+    let request = EmbeddingRequest::builder()
+        .input(vec![
+            "search_query: Rust".into(),
+            "search_document: Tokio".into(),
+        ])
+        .dimensions(2_u32)
+        .build();
+    let response = embeddings.clone().embed(&model, &request).await.unwrap();
+    assert_eq!(response.model, "hf:resolved");
+    assert_eq!(response.embeddings, [vec![0.1, 0.2], vec![0.3, 0.4]]);
+    let usage = response.usage.unwrap();
+    assert_eq!(usage.input_tokens, 8);
+    assert_eq!(usage.total_tokens, Some(8));
+    embeddings.refresh_auth().await.unwrap();
+    embeddings.reload_auth().await.unwrap();
+    let (headers, body) = task.await.unwrap();
+    assert!(headers.starts_with("post /openai/v1/embeddings "));
+    assert!(headers.contains("authorization: bearer test-key"));
+    assert!(headers.contains("accept: application/json"));
+    assert!(!headers.contains("text/event-stream"));
+    assert_eq!(
+        body,
+        json!({
+            "model": model.id,
+            "input": request.input,
+            "dimensions": 2
+        })
+    );
+}
+
+#[tokio::test]
+async fn embeddings_preserve_absent_usage_and_omit_unspecified_dimensions() {
+    use animist::provider::{EmbeddingModel, EmbeddingProvider, EmbeddingRequest};
+
+    let (url, task) = server(
+        "200 OK",
+        "application/json",
+        r#"{"model":"embedding","data":[{"index":0,"embedding":[0.5]}]}"#,
+    )
+    .await;
+    let provider = EmbeddingProvider::new(
+        Synthetic::new(
+            SyntheticConfig::builder()
+                .base_url(url)
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    );
+    let response = provider
+        .embed(
+            &EmbeddingModel::builder()
+                .id("embedding")
+                .provider("synthetic")
+                .build(),
+            &EmbeddingRequest::builder()
+                .input(vec!["unchanged".into()])
+                .build(),
+        )
+        .await
+        .unwrap();
+    assert!(response.usage.is_none());
+    assert_eq!(response.embeddings, [vec![0.5]]);
+    let (_, body) = task.await.unwrap();
+    assert!(body.get("dimensions").is_none());
+}
+
+#[tokio::test]
+async fn embeddings_reject_invalid_requests_before_io() {
+    use animist::{
+        protocol::{ProtocolError, openai::OpenAIProtocolError},
+        provider::{EmbeddingModel, EmbeddingProvider, EmbeddingRequest},
+    };
+    let provider = EmbeddingProvider::new(
+        Synthetic::new(
+            SyntheticConfig::builder()
+                .base_url("http://127.0.0.1:1")
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    );
+    let mut model = EmbeddingModel::builder()
+        .id("embedding")
+        .provider("synthetic")
+        .build();
+    assert!(matches!(
+        provider.embed(&model, &EmbeddingRequest::default()).await,
+        Err(ProviderError::Protocol {
+            source: ProtocolError::OpenAI {
+                source: OpenAIProtocolError::EmptyEmbeddingInput
+            }
+        })
+    ));
+    let request = EmbeddingRequest::builder()
+        .input(vec!["text".into()])
+        .dimensions(0_u32)
+        .build();
+    assert!(matches!(
+        provider.embed(&model, &request).await,
+        Err(ProviderError::Protocol {
+            source: ProtocolError::OpenAI {
+                source: OpenAIProtocolError::ZeroEmbeddingDimensions
+            }
+        })
+    ));
+    model.provider = "other".into();
+    assert!(matches!(
+        provider.embed(&model, &request).await,
+        Err(ProviderError::ModelProviderMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn embeddings_validate_indices_dimensions_and_json() {
+    use animist::{
+        protocol::{ProtocolError, openai::OpenAIProtocolError},
+        provider::{EmbeddingModel, EmbeddingProvider, EmbeddingRequest},
+    };
+    let cases = [
+        (json!([{"index": 1, "embedding": [0.1, 0.2]}]), "range"),
+        (
+            json!([{"index": 0, "embedding": [0.1, 0.2]}, {"index": 0, "embedding": [0.3, 0.4]}]),
+            "duplicate",
+        ),
+        (json!([]), "missing"),
+        (json!([{"index": 0, "embedding": [0.1]}]), "dimensions"),
+        (json!([{"index": 0, "embedding": []}]), "dimensions"),
+        (json!([{"index": 0, "embedding": ["invalid"]}]), "decode"),
+        (json!([{"index": 0, "embedding": [1e100, 0.2]}]), "finite"),
+    ];
+    for (data, expected) in cases {
+        let body = json!({"model": "embedding", "data": data});
+        let (url, task) = server("200 OK", "application/json", &body.to_string()).await;
+        let provider = EmbeddingProvider::new(
+            Synthetic::new(
+                SyntheticConfig::builder()
+                    .base_url(url)
+                    .api_key("test-key")
+                    .build(),
+            )
+            .unwrap(),
+        );
+        let error = provider
+            .embed(
+                &EmbeddingModel::builder()
+                    .id("embedding")
+                    .provider("synthetic")
+                    .build(),
+                &EmbeddingRequest::builder()
+                    .input(vec!["text".into()])
+                    .dimensions(2_u32)
+                    .build(),
+            )
+            .await
+            .unwrap_err();
+        let ProviderError::Protocol {
+            source: ProtocolError::OpenAI { source },
+        } = error
+        else {
+            panic!("unexpected error: {error:?}")
+        };
+        assert!(
+            matches!(
+                (expected, &source),
+                (
+                    "range",
+                    OpenAIProtocolError::EmbeddingIndexOutOfRange { index: 1, count: 1 }
+                ) | (
+                    "duplicate",
+                    OpenAIProtocolError::DuplicateEmbeddingIndex { index: 0 }
+                ) | (
+                    "missing",
+                    OpenAIProtocolError::MissingEmbedding { index: 0 }
+                ) | (
+                    "dimensions",
+                    OpenAIProtocolError::EmbeddingDimensions { .. }
+                ) | ("decode", OpenAIProtocolError::DecodeEmbeddings { .. })
+                    | (
+                        "finite",
+                        OpenAIProtocolError::NonFiniteEmbedding { index: 0 }
+                    )
+            ),
+            "{expected}: {source:?}"
+        );
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn embeddings_preserve_http_errors() {
+    use animist::provider::{EmbeddingModel, EmbeddingProvider, EmbeddingRequest};
+
+    let (url, task) = server(
+        "429 Too Many Requests",
+        "application/json",
+        r#"{"error":"quota"}"#,
+    )
+    .await;
+    let provider = EmbeddingProvider::new(
+        Synthetic::new(
+            SyntheticConfig::builder()
+                .base_url(url)
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    );
+    let error = provider
+        .embed(
+            &EmbeddingModel::builder()
+                .id("embedding")
+                .provider("synthetic")
+                .build(),
+            &EmbeddingRequest::builder()
+                .input(vec!["text".into()])
+                .build(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ProviderError::Http { status: 429, body } if body == r#"{"error":"quota"}"#)
+    );
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn final_done_event_does_not_require_a_trailing_blank_line() {
     use animist::provider::Effort;
 

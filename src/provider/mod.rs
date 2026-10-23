@@ -4,6 +4,7 @@ use async_trait::async_trait;
 pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+mod embedding;
 pub(crate) mod error;
 pub mod llama_cpp;
 mod model;
@@ -15,6 +16,10 @@ mod tools;
 mod types;
 pub mod zai_coding_plan;
 use crate::history::Message;
+pub use embedding::{
+    EmbeddingModel, EmbeddingProvider, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse,
+    EmbeddingUsage,
+};
 pub use error::ProviderError;
 use flume::Sender;
 pub use model::{

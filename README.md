@@ -17,6 +17,8 @@ tool execution, and agent orchestration.
 - **Streaming inference** with incremental text, reasoning, and tool-input events,
   plus an assembled response, token usage, and stop reason.
 - **Provider-independent application code** through a clonable `Provider` handle.
+- **Text embeddings** through a separate `EmbeddingProvider` handle, with Synthetic,
+  llama.cpp, Ollama, and oMLX support, batched inputs, and validated vector dimensions.
 - **Reusable protocol adapters** for OpenAI Responses, OpenAI Chat Completions,
   and Anthropic Messages.
 - **Model catalogs** loaded from models.dev or a saved API document, retaining
@@ -28,11 +30,11 @@ tool execution, and agent orchestration.
 | Provider | Protocols | Guide |
 | --- | --- | --- |
 | OpenAI | Responses (default), Chat Completions | [OpenAI](docs/openai.md) |
-| Ollama (local server) | OpenAI Chat Completions with Ollama compatibility policy | [Ollama](docs/ollama.md) |
-| llama.cpp (single-model or router) | OpenAI Chat Completions with llama.cpp compatibility policy | [llama.cpp](docs/llama-cpp.md) |
-| oMLX | OpenAI Chat Completions with oMLX thinking policy | [oMLX](docs/omlx.md) |
+| Ollama (local server) | OpenAI Chat Completions, Embeddings with Ollama compatibility policy | [Ollama](docs/ollama.md) |
+| llama.cpp (single-model or router) | OpenAI Chat Completions, Embeddings with llama.cpp compatibility policy | [llama.cpp](docs/llama-cpp.md) |
+| oMLX | OpenAI Chat Completions with oMLX thinking policy, Embeddings | [oMLX](docs/omlx.md) |
 | Anthropic | Messages | [Anthropic](docs/anthropic.md) |
-| Synthetic | OpenAI Chat Completions | [Synthetic](docs/synthetic.md) |
+| Synthetic | OpenAI Chat Completions, Embeddings | [Synthetic](docs/synthetic.md) |
 | Z.AI Coding Plan | OpenAI Chat Completions | [Z.AI Coding Plan](docs/zai-coding-plan.md) |
 | Amazon Bedrock | Native Anthropic/OpenAI adapters; requires `bedrock` | [Amazon Bedrock](docs/bedrock.md) |
 

@@ -64,6 +64,8 @@ pub enum ProviderError {
     FastModeUnsupported { provider: String },
     #[snafu(display("Maximum output token limit must be positive"))]
     ZeroOutputTokenLimit,
+    #[snafu(display("Provider {provider} does not support requesting embedding dimensions"))]
+    EmbeddingDimensionsUnsupported { provider: String },
     #[snafu(display("llama.cpp thinking budget {budget} exceeds its signed 32-bit range"))]
     LlamaCppThinkingBudgetOutOfRange { budget: u32 },
     #[snafu(display("Invalid oMLX model listing: {source}"))]

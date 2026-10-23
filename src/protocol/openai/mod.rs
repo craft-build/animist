@@ -1,12 +1,14 @@
 //! OpenAI protocol adapters and wire options.
 
 pub mod chat_completions;
+pub mod embeddings;
 pub(crate) mod error;
 pub mod responses;
 mod types;
 
 use bon::Builder;
 pub use chat_completions::ChatCompletions;
+pub use embeddings::Embeddings;
 pub use error::OpenAIProtocolError;
 pub use responses::Responses;
 use serde::Serialize;

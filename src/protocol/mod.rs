@@ -8,10 +8,12 @@ use crate::history::Message;
 use crate::provider::{Model, ProviderEvent, RequestOptions, StreamResponse, Tool};
 
 pub mod anthropic;
+mod embedding;
 mod error;
 pub mod openai;
 pub(crate) mod sse;
 
+pub use embedding::EmbeddingProtocol;
 pub use error::ProtocolError;
 pub use sse::SseError;
 pub type Result<T> = std::result::Result<T, ProtocolError>;

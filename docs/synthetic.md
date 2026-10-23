@@ -42,6 +42,61 @@ Use `with_client` to replace the runtime HTTP client. `base_url` defaults to
   rates retain Animist's zero defaults, not evidence of free inference.
 - Tier and required-thinking policy are not inferred from names or effort lists.
 
+## Embeddings
+
+`Synthetic` also implements `EmbeddingProviderImpl`, using the same settings,
+authentication, and HTTP client with the OpenAI-compatible `/embeddings` endpoint.
+Embedding model IDs are explicit; chat discovery does not list embedding models.
+
+```rust,no_run
+use animist::provider::{
+    EmbeddingModel, EmbeddingProvider, EmbeddingRequest, Provider,
+    synthetic::{Synthetic, SyntheticConfig},
+};
+use std::sync::Arc;
+
+# async fn example() -> Result<(), animist::provider::ProviderError> {
+let synthetic = Arc::new(Synthetic::new(SyntheticConfig::default())?);
+let chat = Provider::from_arc(synthetic.clone());
+let embeddings = EmbeddingProvider::from_arc(synthetic);
+let model = EmbeddingModel::builder()
+    .id("hf:nomic-ai/nomic-embed-text-v1.5")
+    .provider("synthetic")
+    .build();
+let request = EmbeddingRequest::builder()
+    .input(vec!["search_query: async Rust".into()])
+    .build();
+let response = embeddings.embed(&model, &request).await?;
+let vector = &response.embeddings[0];
+# Ok(())
+# }
+```
+
+Use `EmbeddingProvider::new(Synthetic::new(config)?)` when only embeddings are
+needed. `from_arc` lets chat and embedding handles share one live credential
+store and connection pool. Both handles support credential reload and refresh.
+
+`EmbeddingRequest::dimensions` optionally requests a positive output dimension;
+omitting it leaves the model default unchanged. Inputs are passed unchanged, so
+callers supply any model-specific retrieval prefixes. Animist does not truncate,
+normalize, or add prefixes.
+
+`EmbeddingModel::expected_dimensions` optionally pins the required output width
+using `NonZeroU32`. It is not sent to the server. Conflicting request dimensions
+fail before HTTP; response widths must match the pin even with no resizing
+request. Leave it unknown when the model's width is not known.
+
+Results contain the server's model ID, vectors in input order, and optional usage.
+Absent usage stays absent. Duplicate, missing, or out-of-range indices, empty or
+inconsistent vectors, non-finite values, and requested-dimension mismatches return
+structured protocol errors. Empty batches and zero dimensions fail before HTTP.
+Provider-specific input and batch limits remain enforced by the server.
+
+Embedding requests are non-streaming JSON exchanges. Dropping the request future
+cancels the exchange. HTTP failures preserve the status and response body, just
+as chat requests do. Embedding pricing and mixed-operation catalog discovery
+are not yet represented.
+
 ## Current compatibility limits
 
 `ThinkingConfig::Effort` maps to `reasoning_effort` when the model advertises that
@@ -78,4 +133,5 @@ complete-looking text alone does not establish that a response finished.
 - https://dev.synthetic.new/docs/api/overview
 - https://dev.synthetic.new/docs/openai/chat-completions
 - https://dev.synthetic.new/docs/openai/models
+- https://dev.synthetic.new/docs/openai/embeddings
 - https://dev.synthetic.new/docs/api/models

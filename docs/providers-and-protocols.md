@@ -43,6 +43,25 @@ Initial protocol boundaries to consider:
 These are independent adapters, not variants forced into a single universal
 request schema or lifecycle.
 
+### Embeddings
+
+`provider::EmbeddingProvider` is a separate clonable handle for batched text
+embeddings. Its models, requests, responses, and usage do not depend on chat
+messages or thinking settings. Synthetic, llama.cpp, Ollama, and oMLX implement
+both interfaces; applications can construct both handles from the same concrete
+provider `Arc`.
+
+`protocol::EmbeddingProtocol` translates embedding requests and assembles
+non-streaming results. `protocol::openai::Embeddings` implements this contract
+using private Serde wire types and validates vector indices and dimensions.
+Models can pin an optional expected output width independently of requesting
+server-side resizing. Unknown widths are not inferred from model names.
+The existing `Protocol` contract remains dedicated to conversational generation.
+Protocol errors retain the existing concrete-to-protocol-to-provider layering.
+
+Embedding model IDs are currently explicit. Existing chat discovery semantics
+are unchanged; mixed-operation catalogs and embedding pricing are future work.
+
 ### Protocol contract
 
 `protocol::Protocol` is `Send + Sync` and uses `async-trait`. It translates a

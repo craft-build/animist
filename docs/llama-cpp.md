@@ -47,6 +47,33 @@ enabled, inference also loads an unloaded model. With `--no-models-autoload`,
 load the model outside Animist before inference. The provider does not retry
 load failures or expose lifecycle APIs, per-request autoload, or status events.
 
+## Embeddings
+
+`LlamaCpp` also implements `EmbeddingProviderImpl` through the shared
+OpenAI-compatible `/v1/embeddings` adapter. Construct an `EmbeddingModel` with
+provider `"llama-cpp"` and the exact embedding model ID or router preset name.
+The ordinary `model` field routes the request; no separate embedding server
+configuration is needed in Animist.
+
+The selected server/worker must run with `--embeddings` and a pooling type other
+than `none`. Configure these options for the embedding model's router preset,
+not for chat workers. Model loading and autoload policy remain server-owned.
+
+Use `EmbeddingProvider::new(LlamaCpp::new(config)?)`, or build chat and embedding
+handles from the same `Arc<LlamaCpp>` to share authentication and the HTTP client.
+Batched text is sent unchanged; vector results are validated and reordered by
+input index.
+
+Current upstream does not implement the OpenAI `dimensions` request field, so
+Animist rejects explicit dimension requests rather than sending an ignored
+option. Set `EmbeddingModel::expected_dimensions` to a positive known native
+width to validate output without requesting resizing. The server owns pooling
+and normalization; Animist does not modify returned vectors.
+
+Embedding model IDs and dimensions remain explicit, not inferred from names or
+chat catalog metadata. See the [Synthetic embedding example](synthetic.md#embeddings)
+for the shared request/response API.
+
 ## Request policy
 
 - Output limits use `max_tokens`: request options first, then model metadata,
@@ -87,3 +114,5 @@ for server configuration and supported extensions.
 fixtures without downloading models or starting `llama-server`. Live
 server-version, template, autoload, and model-specific behavior require a
 separate smoke test.
+`cargo test --test embedding` additionally tests embedding routing, authentication,
+dimension validation, and HTTP errors for all three local providers.

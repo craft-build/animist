@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(embeddings)* add a typed `EmbeddingProvider` handle, OpenAI-compatible embedding
+  adapter, and Synthetic implementation sharing chat authentication and transport.
+- *(embeddings)* add optional expected output dimensions and local llama.cpp,
+  Ollama, and oMLX embedding providers using the shared adapter.
 - *(ollama)* add local provider using the shared Chat Completions adapter with
   Ollama token-limit and reasoning replay policy.
 - *(llama-cpp)* add single-model and router inference with optional authentication,

@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 
 use super::*;
 use crate::protocol::{
-    Protocol, ProtocolInput,
+    EmbeddingProtocol, Protocol, ProtocolInput,
     openai::{ChatCompletions, ChatTokenLimit, OpenAiOptions},
 };
 
@@ -100,7 +100,16 @@ impl Omlx {
             request = request.header(AUTHORIZATION, auth);
         }
         if let Some(body) = body {
-            request = request.header("Accept", "text/event-stream").json(&body);
+            request = request
+                .header(
+                    "Accept",
+                    if path == "chat/completions" {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
+                .json(&body);
         }
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
@@ -128,16 +137,16 @@ impl ProviderImpl for Omlx {
         options: RequestOptions,
     ) -> Result<StreamResponse> {
         ensure!(
-            model.provider.as_ref() == self.name(),
+            model.provider.as_ref() == ProviderImpl::name(self),
             error::ModelProviderMismatchSnafu {
-                expected: self.name(),
+                expected: ProviderImpl::name(self),
                 actual: model.provider.as_ref(),
             }
         );
         ensure!(
             !options.fast && model.overrides.fast != Some(true),
             error::FastModeUnsupportedSnafu {
-                provider: self.name()
+                provider: ProviderImpl::name(self)
             }
         );
         let thinking = &model.info.features.thinking;
@@ -248,6 +257,41 @@ impl ProviderImpl for Omlx {
             *self.auth.write().await = Some(auth);
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl EmbeddingProviderImpl for Omlx {
+    fn name(&self) -> &str {
+        "omlx"
+    }
+
+    async fn embed(
+        &self,
+        model: &EmbeddingModel,
+        request: &EmbeddingRequest,
+    ) -> Result<EmbeddingResponse> {
+        ensure!(
+            model.provider == EmbeddingProviderImpl::name(self),
+            error::ModelProviderMismatchSnafu {
+                expected: EmbeddingProviderImpl::name(self),
+                actual: &model.provider,
+            }
+        );
+        let protocol = crate::protocol::openai::Embeddings;
+        let body = protocol.request(model, request)?;
+        let response = self
+            .send(reqwest::Method::POST, "embeddings", Some(body))
+            .await?;
+        Ok(protocol.assemble(response, model, request).await?)
+    }
+
+    async fn refresh_auth(&self) -> Result<()> {
+        ProviderImpl::refresh_auth(self).await
+    }
+
+    async fn reload_auth(&self) -> Result<()> {
+        ProviderImpl::reload_auth(self).await
     }
 }
 
