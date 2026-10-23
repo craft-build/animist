@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/craft-build/animist/compare/v0.2.0...v0.3.0) - 2026-10-23
+
+### Added
+
+- *(decider)* add System One protocol and llama.cpp support
+- *(embeddings)* add typed providers and OpenAI-compatible adapters
+- *(provider)* add Ollama, llama.cpp, and oMLX support
+- *(history)* add extensible VCC compaction
+- *(history)* [**breaking**] preserve revisions and apply atomic compaction plans
+- *(examples)* add manual Bedrock provider test
+- *(history)* [**breaking**] implement a history shape and migrate message structs into it
+
+### Other
+
+- fix clippy issues
+
 ## [0.2.0](https://github.com/craft-build/animist/compare/v0.1.0...v0.2.0) - 2026-10-22
 
 ### Added
