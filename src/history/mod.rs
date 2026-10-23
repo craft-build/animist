@@ -3,6 +3,7 @@
 
 mod message;
 mod stored;
+mod vcc;
 
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -12,6 +13,7 @@ pub use message::{ContentBlock, ImageSource, Message, MessageKind, Role};
 use snafu::{OptionExt, ResultExt, Snafu, ensure};
 pub use stored::{HistoryEntry, StoredMessage};
 use tokio::sync::RwLock;
+pub use vcc::{VccCompactor, VccExtraction, VccExtractor, VccWithExtractor};
 
 use crate::Struct;
 

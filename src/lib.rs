@@ -8,6 +8,7 @@ extern crate macro_rules_attribute;
 
 derive_alias! {
  #[derive(Struct!)] = #[derive(Debug, Clone, Default, PartialEq)];
+ #[derive(StructWithCustomDefault!)] = #[derive(Debug, Clone, PartialEq)];
  #[derive(StructNoDebug!)] = #[derive(Clone, PartialEq)];
  #[derive(Enum!)] = #[derive(Debug, Clone, PartialEq, Eq)];
 }
