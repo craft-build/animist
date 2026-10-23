@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(ollama)* add local provider using the shared Chat Completions adapter with
+  Ollama token-limit and reasoning replay policy.
+- *(llama-cpp)* add single-model and router inference with optional authentication,
+  reasoning replay, and native reasoning token budgets.
+- *(omlx)* add provider with explicit thinking control, native budgets, optional
+  authentication, reasoning replay, and server-advertised context windows.
+
 ## [0.2.0](https://github.com/craft-build/animist/compare/v0.1.0...v0.2.0) - 2026-10-22
 
 ### Added

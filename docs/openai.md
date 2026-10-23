@@ -33,6 +33,9 @@ catalog metadata. Use `OpenAi::with_client` to inject a runtime HTTP client;
 the client is not part of serializable configuration. Alternate endpoints must implement the
 selected OpenAI protocol; this is not a universal compatibility layer.
 
+For local Ollama servers, use the [Ollama provider](ollama.md). It selects
+Ollama's token-limit and reasoning-history fields rather than native OpenAI's.
+
 `OpenAiConfig` supports cloning, equality, defaults, and Serde serialization and
 deserialization. Missing fields use the same defaults as its builder. Protocol
 names serialize as `chat_completions` and `responses`. Explicit API keys may be

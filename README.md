@@ -28,6 +28,9 @@ tool execution, and agent orchestration.
 | Provider | Protocols | Guide |
 | --- | --- | --- |
 | OpenAI | Responses (default), Chat Completions | [OpenAI](docs/openai.md) |
+| Ollama (local server) | OpenAI Chat Completions with Ollama compatibility policy | [Ollama](docs/ollama.md) |
+| llama.cpp (single-model or router) | OpenAI Chat Completions with llama.cpp compatibility policy | [llama.cpp](docs/llama-cpp.md) |
+| oMLX | OpenAI Chat Completions with oMLX thinking policy | [oMLX](docs/omlx.md) |
 | Anthropic | Messages | [Anthropic](docs/anthropic.md) |
 | Synthetic | OpenAI Chat Completions | [Synthetic](docs/synthetic.md) |
 | Z.AI Coding Plan | OpenAI Chat Completions | [Z.AI Coding Plan](docs/zai-coding-plan.md) |

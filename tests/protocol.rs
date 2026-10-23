@@ -272,6 +272,111 @@ fn chat_reasoning_only_and_tool_loop_history_survive_when_new_thinking_is_off() 
 }
 
 #[test]
+fn default_chat_dialect_preserves_existing_assistant_wire_shapes() {
+    use animist::protocol::openai::ChatReasoningField;
+
+    assert_eq!(
+        OpenAiOptions::default().chat_reasoning_field,
+        ChatReasoningField::ReasoningContent
+    );
+    assert_eq!(OpenAiOptions::builder().build(), OpenAiOptions::default());
+    let mut messages = vec![
+        Message::builder()
+            .role(Role::Assistant)
+            .kind(MessageKind::Turn)
+            .content(vec![
+                ContentBlock::Text {
+                    text: "first".into(),
+                },
+                ContentBlock::Text {
+                    text: "second".into(),
+                },
+            ])
+            .build(),
+        Message::builder()
+            .role(Role::Assistant)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "lookup".into(),
+                input: json!({"path":"src"}),
+                thought_signature: None,
+            }])
+            .build(),
+    ];
+    let mut expected = vec![
+        json!({"role":"assistant","content":[
+            {"type":"text","text":"first"},{"type":"text","text":"second"}
+        ]}),
+        json!({"role":"assistant","content":null,"tool_calls":[{
+            "type":"function","id":"call-1",
+            "function":{"name":"lookup","arguments":"{\"path\":\"src\"}"}
+        }]}),
+    ];
+    let model = Model::default();
+    let options = RequestOptions::default();
+    for replay in [false, true] {
+        if replay {
+            messages.push(
+                Message::builder()
+                    .role(Role::Assistant)
+                    .kind(MessageKind::Turn)
+                    .content(vec![
+                        ContentBlock::Thinking {
+                            thinking: "plan".into(),
+                            signature: None,
+                        },
+                        ContentBlock::Text {
+                            text: "answer".into(),
+                        },
+                    ])
+                    .build(),
+            );
+            expected.push(json!({
+                "role":"assistant","content":[{"type":"text","text":"answer"}],
+                "reasoning_content":"plan"
+            }));
+            messages.push(
+                Message::builder()
+                    .role(Role::Assistant)
+                    .kind(MessageKind::Turn)
+                    .content(vec![ContentBlock::Thinking {
+                        thinking: "reasoning-only".into(),
+                        signature: None,
+                    }])
+                    .build(),
+            );
+            expected.push(json!({
+                "role":"assistant","content":null,"reasoning_content":"reasoning-only"
+            }));
+        }
+        let input = ProtocolInput::builder()
+            .model(&model)
+            .messages(messages.as_slice())
+            .system("")
+            .tools([].as_slice())
+            .options(&options)
+            .build();
+        let body = ChatCompletions
+            .request(
+                input,
+                &OpenAiOptions::builder()
+                    .replay_reasoning_content(replay)
+                    .build(),
+            )
+            .unwrap();
+        assert_eq!(body["messages"], json!(expected));
+        for field in [
+            "reasoning_budget_tokens",
+            "enable_thinking",
+            "thinking_budget",
+        ] {
+            assert!(body.get(field).is_none(), "unexpected field: {field}");
+        }
+    }
+}
+
+#[test]
 fn responses_replays_complete_opaque_items_and_rejects_cross_protocol_conversion() {
     let item = json!({
         "type":"reasoning", "id":"rs-1", "encrypted_content":"opaque-not-plain-text",

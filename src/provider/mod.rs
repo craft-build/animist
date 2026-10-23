@@ -5,7 +5,10 @@ pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 pub(crate) mod error;
+pub mod llama_cpp;
 mod model;
+pub mod ollama;
+pub mod omlx;
 pub mod openai;
 pub mod synthetic;
 mod tools;

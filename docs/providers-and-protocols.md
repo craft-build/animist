@@ -4,12 +4,16 @@
 
 The catalog and public provider interface are implemented. OpenAI's provider
 supports Chat Completions and Responses; Anthropic's provider supports Messages.
-Synthetic and Z.AI Coding Plan reuse the OpenAI Chat Completions adapter.
+Synthetic, Z.AI Coding Plan, Ollama, llama.cpp, and oMLX reuse the OpenAI Chat
+Completions adapter.
 The optional Amazon Bedrock provider composes the native Anthropic/OpenAI
 adapters with AWS credential resolution and SigV4 signing.
 See [OpenAI usage](openai.md), [Anthropic usage](anthropic.md),
 [Synthetic usage](synthetic.md), and [Z.AI Coding Plan usage](zai-coding-plan.md).
 See [Amazon Bedrock usage](bedrock.md) for AWS routing and authentication.
+See [Ollama usage](ollama.md) for local inference and compatibility policy.
+See [llama.cpp usage](llama-cpp.md) for single-model and router deployments.
+See [oMLX usage](omlx.md) for local inference and explicit thinking control.
 Other adapters below remain future work.
 The public `protocol::Protocol` async trait defines the shared adapter contract.
 

@@ -7,7 +7,7 @@ use flume::Sender;
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 
-use super::{ChatTokenLimit, OpenAiOptions, error::*, types::*};
+use super::{ChatReasoningField, ChatTokenLimit, OpenAiOptions, error::*, types::*};
 use crate::{
     history::{ContentBlock, Message, MessageKind, Role},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
@@ -84,10 +84,30 @@ impl Protocol for ChatCompletions {
                 if !content.is_empty() || !calls.is_empty() || !reasoning.is_empty() {
                     messages.push(match message.role {
                         Role::User => ChatMessage::User { content },
-                        Role::Assistant => ChatMessage::Assistant {
-                            content: (!content.is_empty()).then_some(content),
-                            tool_calls: calls,
-                            reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
+                        Role::Assistant => match options.chat_reasoning_field {
+                            ChatReasoningField::ReasoningContent => ChatMessage::Assistant {
+                                content: (!content.is_empty())
+                                    .then_some(ChatAssistantContent::Parts(content)),
+                                tool_calls: calls,
+                                reasoning_content: (!reasoning.is_empty()).then_some(reasoning),
+                                reasoning: None,
+                            },
+                            ChatReasoningField::Reasoning => ChatMessage::Assistant {
+                                content: Some(ChatAssistantContent::Text(
+                                    content
+                                        .into_iter()
+                                        .map(|part| match part {
+                                            ChatContent::Text { text } => text,
+                                            ChatContent::ImageUrl { .. } => {
+                                                unreachable!("assistant images are rejected above")
+                                            }
+                                        })
+                                        .collect(),
+                                )),
+                                tool_calls: calls,
+                                reasoning_content: None,
+                                reasoning: (!reasoning.is_empty()).then_some(reasoning),
+                            },
                         },
                     });
                 }
@@ -138,6 +158,9 @@ impl Protocol for ChatCompletions {
             .maybe_thinking(options.chat_thinking.clone())
             .maybe_tool_stream(options.tool_stream)
             .maybe_reasoning_effort(options.reasoning_effort.clone())
+            .maybe_reasoning_budget_tokens(options.chat_reasoning_budget)
+            .maybe_enable_thinking(options.chat_enable_thinking)
+            .maybe_thinking_budget(options.chat_thinking_budget)
             .maybe_service_tier(input.options.fast.then_some(ServiceTier::Priority))
             .build();
         Ok(serde_json::to_value(request).context(EncodeRequestSnafu)?)

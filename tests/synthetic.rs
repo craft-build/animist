@@ -407,6 +407,16 @@ async fn downstream_provider_streams_and_sends_only_wire_fields() {
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"]["include_usage"], true);
     assert_eq!(body["tools"][0]["function"]["name"], "lookup");
+    for field in [
+        "reasoning_budget_tokens",
+        "enable_thinking",
+        "thinking_budget",
+        "max_tokens",
+        "thinking",
+        "tool_stream",
+    ] {
+        assert!(body.get(field).is_none(), "unexpected field: {field}");
+    }
     assert_eq!(
         body["messages"][1],
         json!({"role":"user","content":[{"type":"text","text":"hello"}]})

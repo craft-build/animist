@@ -16,10 +16,19 @@ use serde::Serialize;
 #[builder(on(_, into))]
 pub struct OpenAiOptions {
     pub reasoning_effort: Option<String>,
+    /// Native Chat Completions reasoning budget for llama.cpp.
+    pub chat_reasoning_budget: Option<u32>,
+    /// Explicit template thinking control for oMLX.
+    pub chat_enable_thinking: Option<bool>,
+    /// Native thinking token budget for oMLX.
+    pub chat_thinking_budget: Option<u32>,
     /// Replays unsigned thinking as `reasoning_content` for compatible APIs.
     /// When disabled, unsigned thinking history returns an error.
     #[builder(default)]
     pub replay_reasoning_content: bool,
+    /// Selects replay naming and string assistant content for Ollama's dialect.
+    #[builder(default)]
+    pub chat_reasoning_field: ChatReasoningField,
     pub chat_thinking: Option<ChatThinking>,
     pub tool_stream: Option<bool>,
     #[builder(default)]
@@ -31,6 +40,13 @@ pub enum ChatTokenLimit {
     #[default]
     MaxCompletionTokens,
     MaxTokens,
+}
+
+#[derive(crate::Enum!, Default)]
+pub enum ChatReasoningField {
+    #[default]
+    ReasoningContent,
+    Reasoning,
 }
 
 #[derive(crate::Enum!, Default, Serialize)]

@@ -287,6 +287,13 @@ async fn coding_endpoint_preserves_reasoning_through_streaming_tool_round_trips(
         assert_eq!(body["tool_stream"], true);
         assert!(body.get("max_completion_tokens").is_none());
         assert!(body.get("service_tier").is_none());
+        for field in [
+            "reasoning_budget_tokens",
+            "enable_thinking",
+            "thinking_budget",
+        ] {
+            assert!(body.get(field).is_none(), "unexpected field: {field}");
+        }
     }
     assert_eq!(requests[0].1["max_tokens"], 512);
     assert_eq!(requests[1].1["reasoning_effort"], "max");
@@ -294,6 +301,8 @@ async fn coding_endpoint_preserves_reasoning_through_streaming_tool_round_trips(
         requests[1].1["messages"][2]["reasoning_content"],
         "Check the repository 🦀."
     );
+    assert!(requests[1].1["messages"][2].get("reasoning").is_none());
+    assert_eq!(requests[1].1["messages"][2]["content"], Value::Null);
     assert_eq!(requests[1].1["messages"][3]["role"], "tool");
     assert_eq!(requests[1].1["messages"][3]["tool_call_id"], "call-1");
 }

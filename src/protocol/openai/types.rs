@@ -27,6 +27,12 @@ pub(super) struct ChatRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_budget_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
 }
 
@@ -46,16 +52,25 @@ pub(super) enum ChatMessage {
         content: Vec<ChatContent>,
     },
     Assistant {
-        content: Option<Vec<ChatContent>>,
+        content: Option<ChatAssistantContent>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ChatCall>,
         #[serde(skip_serializing_if = "Option::is_none")]
         reasoning_content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
     },
     Tool {
         tool_call_id: String,
         content: String,
     },
+}
+
+#[derive(crate::Enum!, Serialize)]
+#[serde(untagged)]
+pub(super) enum ChatAssistantContent {
+    Parts(Vec<ChatContent>),
+    Text(String),
 }
 
 #[derive(crate::Enum!, Serialize)]
@@ -201,6 +216,7 @@ pub(super) struct Choice {
 #[derive(crate::Struct!, Deserialize)]
 pub(super) struct Delta {
     pub content: Option<String>,
+    #[serde(alias = "reasoning")]
     pub reasoning_content: Option<String>,
     pub refusal: Option<String>,
     pub tool_calls: Option<Vec<ToolDelta>>,

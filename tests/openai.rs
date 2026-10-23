@@ -261,6 +261,16 @@ async fn chat_streams_interleaved_calls_and_usage() {
     );
     assert_eq!(request["max_completion_tokens"], 123);
     assert_eq!(request["service_tier"], "priority");
+    for field in [
+        "reasoning_budget_tokens",
+        "enable_thinking",
+        "thinking_budget",
+        "max_tokens",
+        "thinking",
+        "tool_stream",
+    ] {
+        assert!(request.get(field).is_none(), "unexpected field: {field}");
+    }
 }
 
 #[tokio::test]
