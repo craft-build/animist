@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/craft-build/animist/compare/v0.3.0...v0.4.0) - 2026-10-27
+
+### Added
+
+- *(agent)* [**breaking**] implement shared agent runtime and typed tools
+- *(agent)* initial skeleton for agent module
+
+### Fixed
+
+- *(provider)* reconcile fixtures with runtime model handles
+
+### Other
+
+- add local rebase landing skill
+
 ## [0.3.0](https://github.com/craft-build/animist/compare/v0.2.0...v0.3.0) - 2026-10-23
 
 ### Added
