@@ -93,7 +93,7 @@ impl MessageKind {
     }
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 #[serde(rename_all = "snake_case")]
 pub struct Message {

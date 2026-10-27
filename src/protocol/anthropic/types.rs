@@ -110,14 +110,14 @@ pub(super) enum Event {
     Unknown,
 }
 
-#[derive(crate::Struct!, Deserialize)]
+#[derive(crate::Struct!, PartialEq, Deserialize)]
 pub(super) struct MessageStart {
     pub role: Role,
     pub content: Vec<Value>,
     pub usage: InitialUsage,
 }
 
-#[derive(crate::Struct!, Deserialize)]
+#[derive(crate::Struct!, PartialEq, Deserialize)]
 pub(super) struct InitialUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
@@ -125,7 +125,7 @@ pub(super) struct InitialUsage {
     pub cache_read_input_tokens: Option<u32>,
 }
 
-#[derive(crate::Struct!, Deserialize)]
+#[derive(crate::Struct!, PartialEq, Deserialize)]
 pub(super) struct UsageDelta {
     pub output_tokens: u32,
     pub input_tokens: Option<u32>,
@@ -133,7 +133,7 @@ pub(super) struct UsageDelta {
     pub cache_read_input_tokens: Option<u32>,
 }
 
-#[derive(crate::Struct!, Deserialize)]
+#[derive(crate::Struct!, PartialEq, Deserialize)]
 pub(super) struct MessageDelta {
     pub stop_reason: Option<String>,
 }

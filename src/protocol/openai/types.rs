@@ -80,7 +80,7 @@ pub(super) enum ChatContent {
     ImageUrl { image_url: ImageUrl },
 }
 
-#[derive(crate::Struct!, Eq, Builder, Serialize)]
+#[derive(crate::Struct!, PartialEq, Eq, Builder, Serialize)]
 #[builder(on(_, into))]
 pub(super) struct ImageUrl {
     pub url: String,
@@ -92,7 +92,7 @@ pub(super) enum ChatCall {
     Function { id: String, function: FunctionCall },
 }
 
-#[derive(crate::Struct!, Eq, Builder, Serialize)]
+#[derive(crate::Struct!, PartialEq, Eq, Builder, Serialize)]
 #[builder(on(_, into))]
 pub(super) struct FunctionCall {
     pub name: String,
@@ -105,7 +105,7 @@ pub(super) enum ChatTool {
     Function { function: FunctionDefinition },
 }
 
-#[derive(crate::Struct!, Eq, Builder, Serialize)]
+#[derive(crate::Struct!, PartialEq, Eq, Builder, Serialize)]
 #[builder(on(_, into))]
 pub(super) struct FunctionDefinition {
     pub name: String,

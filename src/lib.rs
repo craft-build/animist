@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod catalog;
 pub mod history;
 pub mod protocol;
@@ -7,18 +8,20 @@ pub mod provider;
 extern crate macro_rules_attribute;
 
 derive_alias! {
- #[derive(Struct!)] = #[derive(Debug, Clone, Default, PartialEq)];
- #[derive(StructWithCustomDefault!)] = #[derive(Debug, Clone, PartialEq)];
- #[derive(StructNoDebug!)] = #[derive(Clone, PartialEq)];
+ #[derive(Struct!)] = #[derive(Debug, Clone, Default)];
+ #[derive(StructWithCustomDefault!)] = #[derive(Debug, Clone)];
+ #[derive(StructNoDebug!)] = #[derive(Clone)];
  #[derive(Enum!)] = #[derive(Debug, Clone, PartialEq, Eq)];
 }
 
 use snafu::Snafu;
 
-use crate::{protocol::ProtocolError, provider::ProviderError};
+use crate::{agent::AgentError, protocol::ProtocolError, provider::ProviderError};
 
 #[derive(Snafu, Debug)]
 pub enum Error {
+    #[snafu(transparent)]
+    Agent { source: AgentError },
     #[snafu(transparent)]
     Protocol { source: ProtocolError },
     #[snafu(transparent)]

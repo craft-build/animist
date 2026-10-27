@@ -169,10 +169,10 @@ impl ProviderImpl for OpenAi {
         event_tx: &Sender<ProviderEvent>,
         options: RequestOptions,
     ) -> Result<StreamResponse> {
-        if model.provider.as_ref() != self.name() {
+        if model.provider.name() != self.name() {
             return error::ModelProviderMismatchSnafu {
                 expected: self.name(),
-                actual: model.provider.as_ref(),
+                actual: model.provider.name(),
             }
             .fail();
         }

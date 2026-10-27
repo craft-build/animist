@@ -15,7 +15,7 @@ pub struct DeciderModel {
     pub provider: String,
 }
 
-#[derive(crate::Struct!, Builder, Deserialize, Serialize)]
+#[derive(crate::Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct BooleanCriteria {
     pub when_true: Option<Value>,

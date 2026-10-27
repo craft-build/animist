@@ -104,10 +104,10 @@ impl ProviderImpl for ZaiCodingPlan {
         mut options: RequestOptions,
     ) -> Result<StreamResponse> {
         ensure!(
-            model.provider.as_ref() == self.name(),
+            model.provider.name() == self.name(),
             error::ModelProviderMismatchSnafu {
                 expected: self.name(),
-                actual: model.provider.as_ref(),
+                actual: model.provider.name(),
             }
         );
         ensure!(

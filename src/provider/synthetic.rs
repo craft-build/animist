@@ -171,10 +171,10 @@ impl ProviderImpl for Synthetic {
         mut options: RequestOptions,
     ) -> Result<StreamResponse> {
         ensure!(
-            model.provider.as_ref() == ProviderImpl::name(self),
+            model.provider.name() == ProviderImpl::name(self),
             error::ModelProviderMismatchSnafu {
                 expected: ProviderImpl::name(self),
-                actual: model.provider.as_ref(),
+                actual: model.provider.name(),
             }
         );
         ensure!(

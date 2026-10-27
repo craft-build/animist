@@ -22,7 +22,7 @@ pub use sse::SseError;
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 
 /// Shared inference input before translation into a protocol's wire format.
-#[derive(Debug, Clone, Copy, Builder)]
+#[derive(Clone, Copy, Builder)]
 #[builder(on(_, into))]
 pub struct ProtocolInput<'a> {
     pub model: &'a Model,

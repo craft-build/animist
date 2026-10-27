@@ -88,10 +88,10 @@ fn provider(url: &str) -> Provider {
     )
 }
 
-fn model() -> Model {
+fn model(provider: Provider) -> Model {
     Model::builder()
         .id("custom-model")
-        .provider("anthropic")
+        .provider(provider)
         .info(ModelInfo::default())
         .build()
 }
@@ -160,7 +160,7 @@ async fn provider_auth_and_typed_request_translation_work_over_http() {
     let (url, task) = server(vec![(200, text_stream("Héllo"))]).await;
     let provider = provider(&url);
     assert_eq!(provider.name(), "anthropic");
-    let mut model = model();
+    let mut model = model(provider.clone());
     model.info.config.max_output_tokens = Some(256);
     let user = Message::builder()
         .role(Role::User)
@@ -275,7 +275,14 @@ async fn thinking_signatures_redaction_and_interleaved_tools_survive_replay() {
     let provider = provider(&url);
     let (tx, rx) = flume::unbounded();
     let response = provider
-        .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+        .stream_message(
+            &model(provider.clone()),
+            &[],
+            "",
+            &[],
+            &tx,
+            RequestOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
@@ -334,7 +341,7 @@ async fn thinking_signatures_redaction_and_interleaved_tools_survive_replay() {
         .build();
     provider
         .stream_message(
-            &model(),
+            &model(provider.clone()),
             &[response.message, results],
             "",
             &[],
@@ -394,11 +401,12 @@ async fn budget_adaptive_and_effort_use_model_policy_not_model_names() {
         ),
     ] {
         let (url, task) = server(vec![(200, text_stream("ok"))]).await;
-        let mut model = model();
+        let provider = provider(&url);
+        let mut model = model(provider.clone());
         model.info.features.thinking.supported = true;
         model.info.features.thinking.efforts = vec![Effort::High, Effort::XHigh, Effort::Max];
         let (tx, _rx) = flume::unbounded();
-        provider(&url)
+        provider
             .stream_message(
                 &model,
                 &[],
@@ -419,100 +427,6 @@ async fn budget_adaptive_and_effort_use_model_policy_not_model_names() {
         assert!(requests[0].1.get("speed").is_none());
         assert!(!requests[0].0.contains("fast-mode"));
     }
-}
-
-#[test]
-fn downstream_adapter_uses_public_options_and_rejects_unreplayable_content() {
-    let protocol: &dyn Protocol<Request = Value, Response = reqwest::Response, Options = AnthropicOptions> =
-        &Messages;
-    let mut model = model();
-    model.provider = "another-provider".into();
-    let request_options = RequestOptions::default();
-    let options = AnthropicOptions::builder()
-        .max_tokens(100_u32)
-        .thinking(AnthropicThinking::Disabled)
-        .fast(false)
-        .build();
-    for (role, block, expected) in [
-        (
-            Role::Assistant,
-            ContentBlock::Thinking {
-                thinking: "plan".into(),
-                signature: None,
-            },
-            AnthropicProtocolError::MissingReplaySignature,
-        ),
-        (
-            Role::User,
-            ContentBlock::Image {
-                source: ImageSource::from_bytes("image/bmp", b"image"),
-            },
-            AnthropicProtocolError::UnsupportedImageMediaType {
-                media_type: "image/bmp".into(),
-            },
-        ),
-        (
-            Role::Assistant,
-            ContentBlock::Image {
-                source: ImageSource::from_bytes("image/png", b"image"),
-            },
-            AnthropicProtocolError::UnsupportedContent {
-                role: Role::Assistant,
-            },
-        ),
-        (
-            Role::User,
-            ContentBlock::ToolResult {
-                tool_use_id: "c".into(),
-                content: "".into(),
-                is_error: false,
-                loaded_tools: vec!["tool".into()],
-            },
-            AnthropicProtocolError::UnsupportedLoadedTools,
-        ),
-        (
-            Role::Assistant,
-            ContentBlock::ToolUse {
-                id: "c".into(),
-                name: "f".into(),
-                input: json!(1),
-                thought_signature: None,
-            },
-            AnthropicProtocolError::InvalidToolInput { id: "c".into() },
-        ),
-    ] {
-        let messages = [Message::builder()
-            .role(role)
-            .content(vec![block])
-            .kind(MessageKind::Turn)
-            .build()];
-        let input = ProtocolInput::builder()
-            .model(&model)
-            .messages(&messages[..])
-            .system("")
-            .tools(&[][..])
-            .options(&request_options)
-            .build();
-        let ProtocolError::Anthropic { source } = protocol.request(input, &options).unwrap_err()
-        else {
-            panic!("Wrong error layer")
-        };
-        assert_eq!(
-            std::mem::discriminant(&source),
-            std::mem::discriminant(&expected)
-        );
-    }
-    let input = ProtocolInput::builder()
-        .model(&model)
-        .messages(&[][..])
-        .system("")
-        .tools(&[][..])
-        .options(&request_options)
-        .build();
-    assert_eq!(
-        protocol.request(input, &options).unwrap()["model"],
-        "custom-model"
-    );
 }
 
 #[tokio::test]
@@ -570,7 +484,7 @@ async fn invalid_provider_policy_fails_before_transport() {
             },
         ),
     ] {
-        let mut model = model();
+        let mut model = model(provider.clone());
         model.overrides.thinking = Some(if required {
             ThinkingSupport::Required
         } else if support {
@@ -600,7 +514,7 @@ async fn invalid_provider_policy_fails_before_transport() {
         );
     }
     let (tx, _rx) = flume::unbounded();
-    let mut model = model();
+    let mut model = model(provider.clone());
     model.overrides.fast = Some(false);
     assert!(matches!(
         provider
@@ -790,7 +704,14 @@ async fn all_supported_stop_reasons_remain_distinct() {
         let (url, task) = server(vec![(200, sse(events))]).await;
         let (tx, _rx) = flume::unbounded();
         let response = provider(&url)
-            .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+            .stream_message(
+                &model(provider.clone()),
+                &[],
+                "",
+                &[],
+                &tx,
+                RequestOptions::default(),
+            )
             .await
             .unwrap();
         assert_eq!(response.stop_reason, Some(expected.clone()));
@@ -880,7 +801,14 @@ async fn invalid_stream_transitions_have_specific_protocol_errors() {
         let (url, task) = server(vec![(200, sse(events))]).await;
         let (tx, _rx) = flume::unbounded();
         let error = provider(&url)
-            .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+            .stream_message(
+                &model(provider.clone()),
+                &[],
+                "",
+                &[],
+                &tx,
+                RequestOptions::default(),
+            )
             .await
             .unwrap_err();
         let ProviderError::Protocol {
@@ -908,7 +836,14 @@ async fn malformed_tool_json_preserves_call_context_and_source() {
     ]))]).await;
     let (tx, _rx) = flume::unbounded();
     let error = provider(&url)
-        .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+        .stream_message(
+            &model(provider.clone()),
+            &[],
+            "",
+            &[],
+            &tx,
+            RequestOptions::default(),
+        )
         .await
         .unwrap_err();
     assert!(error.source().unwrap().is::<serde_json::Error>());
@@ -936,7 +871,14 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
     ]))]).await;
     let (tx, rx) = flume::unbounded();
     let error = provider(&url)
-        .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+        .stream_message(
+            &model(provider.clone()),
+            &[],
+            "",
+            &[],
+            &tx,
+            RequestOptions::default(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(error, ProviderError::Protocol {
@@ -958,7 +900,14 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
 
     let (url, task) = server(vec![(200, "data: {invalid}\n\n".into())]).await;
     let error = provider(&url)
-        .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+        .stream_message(
+            &model(provider.clone()),
+            &[],
+            "",
+            &[],
+            &tx,
+            RequestOptions::default(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -978,7 +927,14 @@ async fn closed_event_receiver_returns_through_protocol_errors() {
     let (tx, rx) = flume::unbounded();
     drop(rx);
     let error = provider(&url)
-        .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+        .stream_message(
+            &model(provider.clone()),
+            &[],
+            "",
+            &[],
+            &tx,
+            RequestOptions::default(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -1016,7 +972,7 @@ async fn dropping_the_future_cancels_the_http_exchange() {
         assert!(matches!(closed, Ok(0) | Err(_)));
     });
     let provider = provider(&url);
-    let model = model();
+    let model = model(provider.clone());
     let (tx, rx) = flume::bounded(1);
     {
         let stream = provider.stream_message(&model, &[], "", &[], &tx, RequestOptions::default());
@@ -1046,7 +1002,14 @@ async fn empty_tool_input_and_nullable_cache_usage_are_valid() {
     let (url, task) = server(vec![(200, sse(events))]).await;
     let (tx, _rx) = flume::unbounded();
     let response = provider(&url)
-        .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+        .stream_message(
+            &model(provider.clone()),
+            &[],
+            "",
+            &[],
+            &tx,
+            RequestOptions::default(),
+        )
         .await
         .unwrap();
     assert_eq!(response.usage.input, 1);

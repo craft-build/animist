@@ -59,7 +59,7 @@ pub enum ChatThinkingMode {
     Disabled,
 }
 
-#[derive(crate::Struct!, Eq, Builder, Serialize)]
+#[derive(crate::Struct!, PartialEq, Eq, Builder, Serialize)]
 #[builder(on(_, into))]
 pub struct ChatThinking {
     #[serde(rename = "type")]

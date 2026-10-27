@@ -16,7 +16,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 /// Provider metadata only; no credentials are read and no clients are created.
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct ProviderInfo {
     pub id: String,
@@ -31,7 +31,7 @@ pub struct ProviderInfo {
 }
 
 /// Normalized model information alongside its unmodified models.dev record.
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct CatalogModel {
     pub name: String,
@@ -40,7 +40,7 @@ pub struct CatalogModel {
     pub metadata: Value,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct ProviderCatalog {
     pub info: ProviderInfo,

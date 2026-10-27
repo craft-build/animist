@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
-use crate::{Enum, Struct};
+use crate::{Enum, Struct, StructNoDebug, provider::Provider};
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct FastPricing {
     pub input: f64,
     pub output: f64,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 #[serde(rename_all = "snake_case")]
 pub struct Pricing {
@@ -80,7 +80,7 @@ pub enum Effort {
     Max,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct Thinking {
     #[serde(default)]
@@ -90,7 +90,7 @@ pub struct Thinking {
     pub efforts: Vec<Effort>,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 #[serde(rename_all = "snake_case")]
 pub struct Features {
@@ -100,7 +100,7 @@ pub struct Features {
     pub deferred_tools: bool,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 #[serde(rename_all = "snake_case")]
 pub struct Config {
@@ -110,7 +110,7 @@ pub struct Config {
     pub context_window: Option<u32>,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct ModelInfo {
     pub ids: Vec<String>,
@@ -138,11 +138,11 @@ pub struct Overrides {
     pub fast: Option<bool>,
 }
 
-#[derive(Struct!, Builder)]
+#[derive(StructNoDebug!, Builder)]
 #[builder(on(_, into))]
 pub struct Model {
     pub id: String,
-    pub provider: Arc<str>,
+    pub provider: Arc<Provider>,
     pub info: ModelInfo,
     #[builder(default)]
     pub overrides: Overrides,

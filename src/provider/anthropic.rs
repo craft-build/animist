@@ -17,7 +17,7 @@ use crate::protocol::{
 };
 
 /// Serializable Anthropic settings; API keys are never serialized.
-#[derive(crate::StructNoDebug!, Builder, Serialize, Deserialize)]
+#[derive(crate::StructNoDebug!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct AnthropicConfig {
@@ -181,10 +181,10 @@ impl ProviderImpl for Anthropic {
         options: RequestOptions,
     ) -> Result<StreamResponse> {
         ensure!(
-            model.provider.as_ref() == self.name(),
+            model.provider.name() == self.name(),
             error::ModelProviderMismatchSnafu {
                 expected: self.name(),
-                actual: model.provider.as_ref(),
+                actual: model.provider.name(),
             }
         );
         ensure!(
