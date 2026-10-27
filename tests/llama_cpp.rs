@@ -71,7 +71,7 @@ fn model() -> Model {
     info.features.thinking.efforts = vec![Effort::Low, Effort::Max];
     info.config.max_output_tokens = Some(128);
     Model::builder()
-        .provider("llama-cpp")
+        .provider(provider("http://127.0.0.1:1/v1".into()))
         .id("org/model:Q4_K_M")
         .info(info)
         .build()
@@ -316,7 +316,7 @@ async fn thinking_modes_and_reasoning_only_history_use_native_policy() {
         }])
         .build()];
     let unknown = Model::builder()
-        .provider("llama-cpp")
+        .provider(provider.clone())
         .id("unknown")
         .info(ModelInfo::default())
         .build();
@@ -406,7 +406,15 @@ async fn policy_and_unreplayable_content_fail_before_transport() {
         ProviderError::ReasoningRequired
     ));
     let mut wrong = model();
-    wrong.provider = "openai".into();
+    wrong.provider = Provider::new(
+        animist::provider::openai::OpenAi::new(
+            animist::provider::openai::OpenAiConfig::builder()
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    )
+    .into();
     assert!(matches!(
         provider
             .stream_message(&wrong, &[], "", &[], &tx, RequestOptions::default())

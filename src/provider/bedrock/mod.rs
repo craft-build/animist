@@ -51,7 +51,7 @@ pub enum Protocol {
 }
 
 /// Serializable routing and policy; AWS credentials stay in runtime providers.
-#[derive(crate::StructNoDebug!, Debug, Builder, Serialize, Deserialize)]
+#[derive(crate::StructNoDebug!, Debug, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct BedrockConfig {
@@ -299,10 +299,10 @@ impl ProviderImpl for Bedrock {
         mut options: RequestOptions,
     ) -> Result<StreamResponse> {
         ensure!(
-            model.provider.as_ref() == self.name(),
+            model.provider.name() == self.name(),
             provider_error::ModelProviderMismatchSnafu {
                 expected: self.name(),
-                actual: model.provider.as_ref(),
+                actual: model.provider.name(),
             }
         );
         ensure!(

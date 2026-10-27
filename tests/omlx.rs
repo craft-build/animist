@@ -71,7 +71,7 @@ fn model() -> Model {
     info.features.thinking.efforts = vec![Effort::Low, Effort::Max];
     info.config.max_output_tokens = Some(128);
     Model::builder()
-        .provider("omlx")
+        .provider(provider("http://127.0.0.1:1/v1".into()))
         .id("local-model:thinking")
         .info(info)
         .build()
@@ -214,7 +214,7 @@ async fn thinking_modes_do_not_confuse_effort_with_enablement() {
     let provider = provider(url);
     let (tx, _rx) = flume::unbounded();
     let unknown = Model::builder()
-        .provider("omlx")
+        .provider(provider.clone())
         .id("unknown")
         .info(ModelInfo::default())
         .build();
@@ -441,7 +441,15 @@ async fn policy_and_signed_history_fail_before_transport() {
         ProviderError::ReasoningRequired
     ));
     let mut wrong = model();
-    wrong.provider = "openai".into();
+    wrong.provider = Provider::new(
+        animist::provider::openai::OpenAi::new(
+            animist::provider::openai::OpenAiConfig::builder()
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    )
+    .into();
     assert!(matches!(
         provider
             .stream_message(&wrong, &[], "", &[], &tx, RequestOptions::default())

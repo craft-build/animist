@@ -1,5 +1,10 @@
 # Reconcile existing fixtures with the current runtime Model API
 
+**Status: implemented.** Fixtures and examples use runtime provider handles,
+value types have focused equality derives, and Bedrock checks the handle's provider
+name before credential resolution. A regression test covers mismatched ownership.
+The original task below is retained as historical context.
+
 Implement in Animist as a separate cross-cutting maintenance task. Do not change
 the agent runtime to restore obsolete provider-name construction or fabricate
 Model::default() with a nonfunctional provider.

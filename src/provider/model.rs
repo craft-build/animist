@@ -129,7 +129,7 @@ pub enum ThinkingSupport {
     Required,
 }
 
-#[derive(Struct!, Builder)]
+#[derive(Struct!, PartialEq, Eq, Builder)]
 #[builder(on(_, into))]
 pub struct Overrides {
     pub tool_examples: Option<bool>,

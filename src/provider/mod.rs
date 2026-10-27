@@ -42,7 +42,7 @@ pub type Result<T> = std::result::Result<T, ProviderError>;
 #[arc_handle]
 #[async_trait]
 pub trait Provider {
-    /// Stable provider identifier matching `Model::provider`.
+    /// Stable provider identifier used for model ownership checks.
     fn name(&self) -> &str;
 
     /// Emits incremental events and returns the assembled response.

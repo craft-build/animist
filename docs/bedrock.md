@@ -67,8 +67,9 @@ Selection is explicit, never inferred from model names. Confirm that your model
 supports the chosen API in the chosen region. Requests to unsupported APIs are
 not retried through a different protocol or endpoint.
 
-Set `Model::provider` to `amazon-bedrock`. Supply the exact model ID or inference
-profile ID required by that API; IDs are sent unchanged in the request body.
+Set `Model::provider` to a shared `Provider` handle wrapping `Bedrock`.
+Supply the exact model ID or inference profile ID required by that API; IDs are
+sent unchanged in the request body.
 For example, some models require a geographic or global inference profile rather
 than a foundation model ID. IAM permissions, model access, quotas, and regional
 availability remain controlled by AWS.

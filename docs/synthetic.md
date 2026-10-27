@@ -21,7 +21,7 @@ Use `with_client` to replace the runtime HTTP client. `base_url` defaults to
 
 ## Requests and discovery
 
-- Set `Model::provider` to `synthetic`.
+- Set `Model::provider` to a shared `Provider` handle wrapping `Synthetic`.
 - Model IDs are sent unchanged, including `hf:`, `syn:`, and `infinite:` IDs.
   Prefer Synthetic's recommended aliases to pinning rotating model versions.
 - All inference requests stream. There is no overall request timeout imposed by

@@ -1,10 +1,7 @@
 use animist::{
     catalog::{CatalogModel, ProviderCatalog},
     history::{ContentBlock, ImageSource, Message, MessageKind, Role},
-    protocol::{
-        Protocol, ProtocolError, ProtocolInput,
-        anthropic::{AnthropicOptions, AnthropicProtocolError, AnthropicThinking, Messages},
-    },
+    protocol::{ProtocolError, anthropic::AnthropicProtocolError},
     provider::{
         Effort, Features, Model, ModelInfo, Pricing, Provider, ProviderError, ProviderEvent,
         RequestOptions, StopReason, Thinking, ThinkingConfig, ThinkingSupport, Tier, Tool,
@@ -532,7 +529,15 @@ async fn invalid_provider_policy_fails_before_transport() {
             .await,
         Err(ProviderError::FastModeDisabled)
     ));
-    model.provider = "openai".into();
+    model.provider = Provider::new(
+        animist::provider::openai::OpenAi::new(
+            animist::provider::openai::OpenAiConfig::builder()
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    )
+    .into();
     assert!(matches!(
         provider
             .stream_message(&model, &[], "", &[], &tx, RequestOptions::default())
@@ -703,7 +708,8 @@ async fn all_supported_stop_reasons_remain_distinct() {
         events.extend(finish(reason));
         let (url, task) = server(vec![(200, sse(events))]).await;
         let (tx, _rx) = flume::unbounded();
-        let response = provider(&url)
+        let provider = provider(&url);
+        let response = provider
             .stream_message(
                 &model(provider.clone()),
                 &[],
@@ -800,7 +806,8 @@ async fn invalid_stream_transitions_have_specific_protocol_errors() {
         events.extend(tail);
         let (url, task) = server(vec![(200, sse(events))]).await;
         let (tx, _rx) = flume::unbounded();
-        let error = provider(&url)
+        let provider = provider(&url);
+        let error = provider
             .stream_message(
                 &model(provider.clone()),
                 &[],
@@ -835,7 +842,8 @@ async fn malformed_tool_json_preserves_call_context_and_source() {
         json!({"type":"content_block_stop","index":0}),
     ]))]).await;
     let (tx, _rx) = flume::unbounded();
-    let error = provider(&url)
+    let provider = provider(&url);
+    let error = provider
         .stream_message(
             &model(provider.clone()),
             &[],
@@ -870,9 +878,10 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
         json!({"type":"error","error":payload}),
     ]))]).await;
     let (tx, rx) = flume::unbounded();
-    let error = provider(&url)
+    let client = provider(&url);
+    let error = client
         .stream_message(
-            &model(provider.clone()),
+            &model(client.clone()),
             &[],
             "",
             &[],
@@ -899,7 +908,8 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
     task.await.unwrap();
 
     let (url, task) = server(vec![(200, "data: {invalid}\n\n".into())]).await;
-    let error = provider(&url)
+    let provider = provider(&url);
+    let error = provider
         .stream_message(
             &model(provider.clone()),
             &[],
@@ -926,7 +936,8 @@ async fn closed_event_receiver_returns_through_protocol_errors() {
     let (url, task) = server(vec![(200, text_stream("hello"))]).await;
     let (tx, rx) = flume::unbounded();
     drop(rx);
-    let error = provider(&url)
+    let provider = provider(&url);
+    let error = provider
         .stream_message(
             &model(provider.clone()),
             &[],
@@ -1001,7 +1012,8 @@ async fn empty_tool_input_and_nullable_cache_usage_are_valid() {
     events.extend(finish("tool_use"));
     let (url, task) = server(vec![(200, sse(events))]).await;
     let (tx, _rx) = flume::unbounded();
-    let response = provider(&url)
+    let provider = provider(&url);
+    let response = provider
         .stream_message(
             &model(provider.clone()),
             &[],

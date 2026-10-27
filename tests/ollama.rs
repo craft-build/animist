@@ -70,7 +70,7 @@ fn model() -> Model {
     info.features.thinking.efforts = vec![Effort::Low, Effort::Max];
     info.config.max_output_tokens = Some(128);
     Model::builder()
-        .provider("ollama")
+        .provider(provider("http://127.0.0.1:1/v1".into()))
         .id("local-model:latest")
         .info(info)
         .build()
@@ -248,7 +248,7 @@ async fn off_is_explicit_without_metadata_and_replays_reasoning_only_history() {
     let (url, task) = server(200, vec![TEXT]).await;
     let model = Model::builder()
         .id("unknown")
-        .provider("ollama")
+        .provider(provider("http://127.0.0.1:1/v1".into()))
         .info(ModelInfo::default())
         .build();
     let messages = [Message::builder()
@@ -381,7 +381,15 @@ async fn rejects_unsupported_policy_before_sending() {
         ProviderError::ReasoningRequired
     ));
     let mut wrong = model();
-    wrong.provider = "openai".into();
+    wrong.provider = Provider::new(
+        animist::provider::openai::OpenAi::new(
+            animist::provider::openai::OpenAiConfig::builder()
+                .api_key("test-key")
+                .build(),
+        )
+        .unwrap(),
+    )
+    .into();
     assert!(matches!(
         provider
             .stream_message(&wrong, &[], "", &[], &tx, RequestOptions::default())

@@ -47,7 +47,7 @@ pub struct ProviderCatalog {
     pub models: BTreeMap<String, CatalogModel>,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct Catalog {
     pub providers: BTreeMap<String, ProviderCatalog>,

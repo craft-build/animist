@@ -120,7 +120,7 @@ fn provider(url: &str, protocol: Protocol) -> Provider {
 fn model() -> Model {
     Model::builder()
         .id("test-model")
-        .provider("openai")
+        .provider(provider("http://127.0.0.1:1/v1", Protocol::Responses))
         .info(ModelInfo::default())
         .build()
 }

@@ -161,7 +161,9 @@ fn model() -> Model {
     info.features.thinking.supported = true;
     info.features.thinking.efforts = vec![Effort::Low, Effort::High, Effort::Max];
     Model::builder()
-        .provider("zai-coding-plan")
+        .provider(Provider::new(
+            ZaiCodingPlan::new(ZaiCodingPlanConfig::builder().api_key("test-key").build()).unwrap(),
+        ))
         .id("glm-5.3")
         .info(info)
         .build()

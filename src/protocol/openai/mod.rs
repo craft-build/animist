@@ -14,7 +14,7 @@ pub use responses::Responses;
 use serde::Serialize;
 
 /// OpenAI wire options resolved by the provider's model policy.
-#[derive(crate::Struct!, Builder)]
+#[derive(crate::Struct!, PartialEq, Eq, Builder)]
 #[builder(on(_, into))]
 pub struct OpenAiOptions {
     pub reasoning_effort: Option<String>,

@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("ANIMIST_MODEL was not returned by the provider")?;
     let model = Model::builder()
         .id(id)
-        .provider("anthropic")
+        .provider(provider.clone())
         .info(info)
         .build();
     let messages = vec![

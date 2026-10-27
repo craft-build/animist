@@ -18,7 +18,7 @@ use crate::protocol::{
 };
 
 /// Serializable oMLX settings; credentials are never serialized.
-#[derive(crate::StructNoDebug!, Builder, Serialize, Deserialize)]
+#[derive(crate::StructNoDebug!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct OmlxConfig {

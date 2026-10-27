@@ -22,7 +22,7 @@ pub const BASE_URL: &str = "https://api.synthetic.new/openai/v1";
 pub const API_KEY_ENV: &str = "SYNTHETIC_API_KEY";
 
 /// Serializable Synthetic settings; API keys are never serialized.
-#[derive(crate::StructNoDebug!, Builder, Serialize, Deserialize)]
+#[derive(crate::StructNoDebug!, PartialEq, Eq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct SyntheticConfig {

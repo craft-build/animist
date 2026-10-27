@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A tool declaration, independent of the harness that executes it.
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct Tool {
     pub name: String,

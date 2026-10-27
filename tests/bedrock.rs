@@ -126,7 +126,9 @@ fn static_sdk() -> SdkConfig {
 
 fn model() -> Model {
     Model::builder()
-        .provider("amazon-bedrock")
+        .provider(Provider::new(
+            Bedrock::from_sdk_config(BedrockConfig::builder().build(), &static_sdk()).unwrap(),
+        ))
         .id("global.example.model-profile")
         .info(ModelInfo::default())
         .build()
@@ -1024,6 +1026,33 @@ async fn unsupported_model_policy_and_cross_protocol_history_fail_before_signing
         })
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn mismatched_provider_identity_fails_before_credentials_or_transport() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Bedrock::from_sdk_config(
+        BedrockConfig::builder()
+            .endpoint_url("http://127.0.0.1:1")
+            .build(),
+        &sdk(Rotating {
+            calls: calls.clone(),
+        }),
+    )
+    .unwrap();
+    let mut model = model();
+    model.provider = Provider::new(animist::provider::ollama::Ollama::new(
+        animist::provider::ollama::OllamaConfig::default(),
+    ))
+    .into();
+    let (tx, rx) = flume::unbounded();
+    assert!(matches!(
+        provider.stream_message(&model, &messages(), "", &[], &tx, RequestOptions::default()).await,
+        Err(ProviderError::ModelProviderMismatch { expected, actual })
+            if expected == "amazon-bedrock" && actual == "ollama"
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(rx.is_empty());
 }
 
 #[tokio::test]

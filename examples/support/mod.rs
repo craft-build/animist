@@ -199,7 +199,7 @@ pub async fn run(provider: Provider, models: Vec<ModelInfo>, args: Arguments) ->
         })?;
     let model = Model::builder()
         .id(&args.model)
-        .provider(provider.name())
+        .provider(provider.clone())
         .info(info)
         .build();
     stdout

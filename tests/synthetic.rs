@@ -621,7 +621,9 @@ async fn server(
 fn model() -> Model {
     Model::builder()
         .id("syn:large:text")
-        .provider("synthetic")
+        .provider(Provider::new(
+            Synthetic::new(SyntheticConfig::builder().api_key("test-key").build()).unwrap(),
+        ))
         .info(ModelInfo::default())
         .build()
 }

@@ -120,7 +120,7 @@ fn model_overrides_stay_separate_from_catalog_data() {
     };
     let mut model = Model::builder()
         .id("example")
-        .provider("test")
+        .provider(Provider::new(TestProvider))
         .info(info.clone())
         .build();
     assert_eq!(model.overrides, Overrides::default());
@@ -198,13 +198,17 @@ impl ProviderImpl for TestProvider {
 async fn downstream_provider_uses_public_types_and_default_adjustment() {
     let provider = Provider::new(TestProvider);
     assert_eq!(provider.name(), "test");
-    let mut model = Model {
-        id: "example-alias".into(),
-        ..Model::default()
-    };
+    let mut model = Model::builder()
+        .id("example-alias")
+        .provider(provider.clone())
+        .info(ModelInfo::default())
+        .build();
     let original = model.clone();
     provider.adjust_model(&mut model).await.unwrap();
-    assert_eq!(model, original);
+    assert_eq!(model.id, original.id);
+    assert_eq!(model.info, original.info);
+    assert_eq!(model.overrides, original.overrides);
+    assert!(std::sync::Arc::ptr_eq(&model.provider, &original.provider));
 
     let (tx, rx) = flume::bounded(1);
     let response = provider

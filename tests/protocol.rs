@@ -5,8 +5,9 @@ use animist::{
         openai::{ChatCompletions, OpenAIProtocolError, OpenAiOptions, Responses},
     },
     provider::{
-        Model, ModelInfo, ProviderEvent, RequestOptions, StopReason, StreamResponse,
+        Model, ModelInfo, Provider, ProviderEvent, RequestOptions, StopReason, StreamResponse,
         ThinkingConfig, TokenUsage,
+        ollama::{Ollama, OllamaConfig},
     },
 };
 use async_trait::async_trait;
@@ -79,7 +80,11 @@ impl Protocol for PlainText {
 #[tokio::test]
 async fn downstream_protocol_supports_non_http_transport_and_dynamic_dispatch() {
     let protocol: &dyn Protocol<Request = String, Response = String, Options = ()> = &PlainText;
-    let model = Model::default();
+    let model = Model::builder()
+        .id("protocol-test")
+        .provider(Provider::new(Ollama::new(OllamaConfig::default())))
+        .info(ModelInfo::default())
+        .build();
     let options = RequestOptions::default();
     let input = ProtocolInput::builder()
         .model(&model)
@@ -108,7 +113,7 @@ fn openai_adapters_share_the_contract_without_sharing_wire_shapes() {
 
     let model = Model::builder()
         .id("compatible-model")
-        .provider("another-provider")
+        .provider(Provider::new(Ollama::new(OllamaConfig::default())))
         .info(ModelInfo::default())
         .build();
     let options = RequestOptions::default();
@@ -159,7 +164,11 @@ fn unsigned_reasoning_is_rejected_instead_of_silently_omitted() {
                 .build(),
         ];
         let before = serde_json::to_value(&messages).unwrap();
-        let model = Model::default();
+        let model = Model::builder()
+            .id("protocol-test")
+            .provider(Provider::new(Ollama::new(OllamaConfig::default())))
+            .info(ModelInfo::default())
+            .build();
         let options = RequestOptions::default();
         let input = ProtocolInput::builder()
             .model(&model)
@@ -234,7 +243,11 @@ fn chat_reasoning_only_and_tool_loop_history_survive_when_new_thinking_is_off() 
             .build(),
     ];
     let before = serde_json::to_value(&messages).unwrap();
-    let model = Model::default();
+    let model = Model::builder()
+        .id("protocol-test")
+        .provider(Provider::new(Ollama::new(OllamaConfig::default())))
+        .info(ModelInfo::default())
+        .build();
     for thinking in [ThinkingConfig::Off, ThinkingConfig::Adaptive] {
         let options = RequestOptions::builder()
             .thinking(thinking)
@@ -313,7 +326,11 @@ fn default_chat_dialect_preserves_existing_assistant_wire_shapes() {
             "function":{"name":"lookup","arguments":"{\"path\":\"src\"}"}
         }]}),
     ];
-    let model = Model::default();
+    let model = Model::builder()
+        .id("protocol-test")
+        .provider(Provider::new(Ollama::new(OllamaConfig::default())))
+        .info(ModelInfo::default())
+        .build();
     let options = RequestOptions::default();
     for replay in [false, true] {
         if replay {
@@ -411,7 +428,11 @@ fn responses_replays_complete_opaque_items_and_rejects_cross_protocol_conversion
             }])
             .build(),
     ];
-    let model = Model::default();
+    let model = Model::builder()
+        .id("protocol-test")
+        .provider(Provider::new(Ollama::new(OllamaConfig::default())))
+        .info(ModelInfo::default())
+        .build();
     let before = serde_json::to_value(&messages).unwrap();
     for thinking in [ThinkingConfig::Off, ThinkingConfig::Adaptive] {
         let options = RequestOptions::builder()
@@ -456,7 +477,11 @@ fn redacted_reasoning_is_not_discarded_or_converted_to_text() {
         }])
         .build()];
     let before = serde_json::to_value(&messages).unwrap();
-    let model = Model::default();
+    let model = Model::builder()
+        .id("protocol-test")
+        .provider(Provider::new(Ollama::new(OllamaConfig::default())))
+        .info(ModelInfo::default())
+        .build();
     let options = RequestOptions::default();
     let input = ProtocolInput::builder()
         .model(&model)

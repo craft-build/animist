@@ -39,7 +39,7 @@ pub trait VccExtractor: Send + Sync {
 
 /// Deterministic, lossy conversation compaction without inference.
 /// Retains the first breadcrumb and the most recent breadcrumbs within a character budget.
-#[derive(StructWithCustomDefault!, Builder, Deserialize, Serialize)]
+#[derive(StructWithCustomDefault!, PartialEq, Eq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct VccCompactor {

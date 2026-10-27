@@ -7,7 +7,7 @@ use std::num::NonZeroU32;
 use super::Result;
 
 /// Explicit embedding model identity, independent of chat configuration.
-#[derive(crate::Struct!, Builder, Deserialize, Serialize)]
+#[derive(crate::Struct!, PartialEq, Eq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct EmbeddingModel {
     pub id: String,

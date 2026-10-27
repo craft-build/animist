@@ -29,8 +29,9 @@ let provider = Provider::new(ZaiCodingPlan::new(ZaiCodingPlanConfig::default())?
 
 ## Models and request policy
 
-Set `Model::provider` to `zai-coding-plan`. Model IDs are sent unchanged; the
-provider does not rewrite old IDs or infer capabilities from names.
+Set `Model::provider` to a shared `Provider` handle wrapping `ZaiCodingPlan`.
+Model IDs are sent unchanged; the provider does not rewrite old IDs or infer
+capabilities from names.
 
 `list_models` returns models from the optional configured `ProviderCatalog`,
 using its map keys as the request IDs. For example, pass the `zai-coding-plan`
