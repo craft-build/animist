@@ -19,26 +19,34 @@ impl Section {
         for rule in self.rules.iter() {
             lines.push(format!("- {rule}"));
         }
-        return lines.join("\n");
+        lines.join("\n")
     }
 
     pub fn to_xml(&self) -> String {
         let mut lines = Vec::default();
-        lines.push(format!("<{}>", self.name));
+        lines.push(format!("<section name=\"{}\">", escape_xml(&self.name)));
         lines.push("  <title>".to_string());
-        lines.push(format!("    {}", self.title));
+        lines.push(format!("    {}", escape_xml(&self.title)));
         lines.push("  </title>".to_string());
         lines.push("  <summary>".to_string());
-        lines.push(format!("    {}", self.summary));
+        lines.push(format!("    {}", escape_xml(&self.summary)));
         lines.push("  </summary>".to_string());
         lines.push("  <rules>".to_string());
         for rule in self.rules.iter() {
-            lines.push(format!("    <rule>{rule}</rule>"));
+            lines.push(format!("    <rule>{}</rule>", escape_xml(rule)));
         }
         lines.push("  </rules>".to_string());
-        lines.push(format!("</{}>", self.name));
+        lines.push("</section>".to_string());
         lines.join("\n")
     }
+}
+
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[derive(Struct!, Builder)]

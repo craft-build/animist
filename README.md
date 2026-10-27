@@ -4,8 +4,8 @@ Model inference and agent-building primitives for the Craft ecosystem, shared by
 [Craft](https://github.com/craft-build) and Revelry.
 
 Animist is an async Rust library with a common provider interface, streaming
-responses, and model catalog metadata. Applications own conversation management,
-tool execution, and agent orchestration.
+responses, model catalog metadata, and a shared agent runtime. Applications supply
+tools and policy through typed implementations and ordered agent layers.
 
 > [!WARNING]
 > Animist is pre-1.0. Releases contain breaking changes; each release's
@@ -13,6 +13,9 @@ tool execution, and agent orchestration.
 
 ## Features
 
+- **Shared agents** with typed tools, ordered linked layers, bounded inference
+  loops, cancellation, events, and revision-preserving tool results.
+  See [agents](docs/agents.md) for construction and lifecycle contracts.
 - **Shared message types** for text, images, reasoning, tool calls, and tool results.
 - **Streaming inference** with incremental text, reasoning, and tool-input events,
   plus an assembled response, token usage, and stop reason.
