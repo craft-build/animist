@@ -94,8 +94,25 @@ impl Protocol for Messages {
                 );
             }
         }
+        let mut system = input.system.to_owned();
         let mut messages = Vec::new();
-        for message in input.messages {
+        for (index, message) in input.messages.iter().enumerate() {
+            if message.role == Role::System {
+                ensure!(
+                    input.options.system_message_policy
+                        == crate::provider::SystemMessagePolicy::MoveToPreamble,
+                    super::error::UnsupportedSystemPlacementSnafu { message: index }
+                );
+                for block in &message.content {
+                    if let ContentBlock::Text { text } = block {
+                        if !system.is_empty() {
+                            system.push_str("\n\n");
+                        }
+                        system.push_str(text);
+                    }
+                }
+                continue;
+            }
             let mut content = Vec::new();
             for block in &message.content {
                 content.push(match block {
@@ -199,7 +216,7 @@ impl Protocol for Messages {
             .maybe_temperature(input.options.temperature)
             .maybe_top_p(input.options.top_p)
             .maybe_stop_sequences(input.options.stop_sequences.clone())
-            .maybe_system((!input.system.is_empty()).then_some(input.system))
+            .maybe_system((!system.is_empty()).then_some(system))
             .tools(tools)
             .maybe_thinking(options.thinking.clone())
             .maybe_output_config(

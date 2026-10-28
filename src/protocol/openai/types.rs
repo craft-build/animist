@@ -58,7 +58,7 @@ pub(super) struct StreamOptions {
 #[serde(tag = "role", rename_all = "snake_case")]
 pub(super) enum ChatMessage {
     System {
-        content: String,
+        content: ChatAssistantContent,
     },
     User {
         content: Vec<ChatContent>,

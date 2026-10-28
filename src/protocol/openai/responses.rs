@@ -141,7 +141,7 @@ impl Protocol for Responses {
                 }
                 items.push(item);
             }
-            if !parts.is_empty() {
+            if !parts.is_empty() || message.role == Role::System {
                 items.push(ResponseInput::Message {
                     role: message.role.clone(),
                     content: parts,

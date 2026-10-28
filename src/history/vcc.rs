@@ -173,6 +173,8 @@ impl<E: VccExtractor> Compactor for VccWithExtractor<E> {
                         match stored.message().role {
                             Role::User => "User",
                             Role::Assistant => "Assistant",
+                            Role::System =>
+                                unreachable!("system messages bound the compacted prefix"),
                         },
                         text
                     ),
@@ -242,7 +244,12 @@ impl<E: VccExtractor> Compactor for VccWithExtractor<E> {
 
 /// Chooses a prompt boundary, falling back to the end of a completed tool cycle.
 fn find_cut(active: &[(usize, &StoredMessage)], keep_recent: usize) -> Option<usize> {
-    let limit = active.len().saturating_sub(keep_recent.max(1));
+    let limit = active.len().saturating_sub(keep_recent.max(1)).min(
+        active
+            .iter()
+            .position(|(_, stored)| stored.message().role == Role::System)
+            .unwrap_or(active.len()),
+    );
     if limit < 2 {
         return None;
     }

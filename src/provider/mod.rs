@@ -38,8 +38,8 @@ pub use model::{
 };
 pub use tools::Tool;
 pub use types::{
-    InputTransformation, ProviderEvent, RequestOptions, StopReason, StreamResponse, ThinkingConfig,
-    TokenUsage,
+    InputTransformation, ProviderEvent, RequestOptions, StopReason, StreamResponse,
+    SystemMessagePolicy, ThinkingConfig, TokenUsage,
 };
 
 /// Result alias for provider operations.

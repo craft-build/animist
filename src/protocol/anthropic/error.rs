@@ -10,6 +10,13 @@ use crate::provider::ProviderEvent;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub enum AnthropicProtocolError {
+    #[snafu(display(
+        "Anthropic Messages cannot preserve system-message placement at message {message}; explicitly select SystemMessagePolicy::MoveToPreamble to relocate instructions"
+    ))]
+    UnsupportedSystemPlacement {
+        message: usize,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("Failed to serialize Anthropic request: {source}"))]
     EncodeRequest { source: serde_json::Error },
     #[snafu(display("Invalid Anthropic stream event: {source}"))]

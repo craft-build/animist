@@ -4,13 +4,15 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Conversation role; provider-neutral two-state ontology.
+/// Conversation authority, independent of consumer-facing message kind.
 #[derive(Enum!, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     #[default]
     User,
     Assistant,
+    /// At-depth instructions; only text content is supported.
+    System,
 }
 
 /// Inline or remote image reference in messages and tool output.

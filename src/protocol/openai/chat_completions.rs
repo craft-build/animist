@@ -49,10 +49,27 @@ impl Protocol for ChatCompletions {
         let mut messages = Vec::new();
         if !input.system.is_empty() {
             messages.push(ChatMessage::System {
-                content: input.system.into(),
+                content: ChatAssistantContent::Text(input.system.into()),
             });
         }
         for message in input.messages {
+            if message.role == Role::System {
+                messages.push(ChatMessage::System {
+                    content: ChatAssistantContent::Parts(
+                        message
+                            .content
+                            .iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => {
+                                    Some(ChatContent::Text { text: text.clone() })
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    ),
+                });
+                continue;
+            }
             for segment in message
                 .content
                 .split_inclusive(|block| matches!(block, ContentBlock::ToolResult { .. }))
@@ -114,6 +131,7 @@ impl Protocol for ChatCompletions {
                 {
                     messages.push(match message.role {
                         Role::User => ChatMessage::User { content },
+                        Role::System => unreachable!("system messages translated above"),
                         Role::Assistant => match options.chat_reasoning_field {
                             ChatReasoningField::ReasoningContent => ChatMessage::Assistant {
                                 content: (!content.is_empty())

@@ -42,10 +42,23 @@ pub enum ThinkingConfig {
     Budget(u32),
 }
 
+/// Policy for protocols without at-depth system messages.
+#[derive(Enum!, Default)]
+pub enum SystemMessagePolicy {
+    /// Reject placement that the protocol cannot preserve.
+    #[default]
+    Reject,
+    /// Append history instructions to the separate preamble in history order.
+    MoveToPreamble,
+}
+
 /// Per-attempt request controls layered over model defaults.
 #[derive(Struct!, PartialEq, Builder)]
 #[builder(on(_, into))]
 pub struct RequestOptions {
+    /// Applies only when the protocol cannot preserve system-message placement.
+    #[builder(default)]
+    pub system_message_policy: SystemMessagePolicy,
     /// Reasoning selection; defaults to off.
     #[builder(default)]
     pub thinking: ThinkingConfig,

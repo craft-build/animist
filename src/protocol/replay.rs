@@ -25,6 +25,11 @@ impl std::fmt::Display for ReplayLocation {
 /// Replay validation failures for message, call, result, and tool shapes.
 #[derive(Debug, Snafu)]
 pub enum ReplayError {
+    #[snafu(display("Non-text content in system message at {location}"))]
+    NonTextSystemContent {
+        location: ReplayLocation,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("Assistant-only content in user message at {location}"))]
     AssistantContentInUser {
         location: ReplayLocation,
@@ -131,6 +136,9 @@ pub fn validate_replay(messages: &[Message], tools: &[Tool]) -> Result<(), Repla
                 message: message_index,
                 block: block_index,
             };
+            if message.role == Role::System && !matches!(block, ContentBlock::Text { .. }) {
+                return Err(NonTextSystemContentSnafu { location }.build());
+            }
             match block {
                 ContentBlock::Thinking { .. }
                 | ContentBlock::RedactedThinking { .. }

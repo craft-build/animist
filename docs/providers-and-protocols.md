@@ -192,6 +192,55 @@ Compatibility references:
 [oMLX wire types](https://github.com/jundot/omlx/blob/main/omlx/api/openai_models.py),
 and [Z.AI](https://docs.z.ai/api-reference/llm/chat-completion).
 
+### System-message placement
+
+History supports text-only `history::Role::System` messages, distinct from user
+observations and assistant dialogue. The existing separate `system` argument
+continues to work; no provider automatically demotes history instructions.
+
+| Adapter / providers | Placement policy |
+| --- | --- |
+| OpenAI Chat Completions | Emits each history instruction as a `system` message at its exact position; the separate preamble remains the first system message. |
+| OpenAI Responses | Emits ordered `system` input messages; the separate preamble remains in `instructions`. |
+| Synthetic, Z.AI Coding Plan, Ollama, llama.cpp, oMLX | Use the Chat Completions translation, preserving roles and order on the wire. Actual model/chat-template support is server-dependent. |
+| Anthropic Messages | Cannot represent at-depth system messages. Rejects any history system message by default, including leading ones, rather than silently relocating it. |
+| Amazon Bedrock | Follows the selected native adapter, including Anthropic rejection/fallback policy. |
+
+For Anthropic, opt in per request to losing placement while retaining instruction
+authority:
+
+```rust
+use animist::provider::{RequestOptions, SystemMessagePolicy};
+
+let options = RequestOptions::builder()
+    .system_message_policy(SystemMessagePolicy::MoveToPreamble)
+    .build();
+```
+
+The default is `SystemMessagePolicy::Reject`. On Anthropic, rejection returns
+`AnthropicProtocolError::UnsupportedSystemPlacement { message, .. }`, with a
+zero-based index into the original request view, transparently wrapped through
+`ProtocolError::Anthropic` and `ProviderError::Protocol`, before HTTP transport.
+Fallback appends instruction text blocks after the separate preamble in history
+and block order, separating nonempty accumulated text with two newlines, and
+omits the system entries from dialogue. It does not edit stored history.
+OpenAI adapters preserve placement even when this fallback option is selected.
+
+System messages accept text blocks only, enforced by shared replay validation.
+Wire preservation does not guarantee that every compatible endpoint or model
+supports multiple or interleaved system messages: upstream restrictions remain
+API errors, never automatic relocation. The same applies to provider-specific
+model restrictions on instruction roles.
+
+Public API additions are `Role::System`, `SystemMessagePolicy`,
+`RequestOptions::system_message_policy`, `ReplayError::NonTextSystemContent`,
+and the Anthropic placement error. Update exhaustive enum matches and direct
+request-option struct literals. Existing serialized user/assistant messages and
+the `stream_message()` signature are unchanged. Custom protocols must explicitly
+preserve instruction authority/placement or reject unsupported input; custom
+providers must forward the policy. See [history](history.md) for edits and VCC's
+conservative instruction-retention boundary.
+
 ### Structural replay validation
 
 `protocol::validate_replay(messages, tools)` checks complete inference views.

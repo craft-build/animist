@@ -6,6 +6,39 @@ including inactive entries, originals, and revisions with their metadata.
 
 ## Entries and views
 
+### At-depth system instructions
+
+`Role::System` represents instruction authority at a specific history position.
+Use text blocks only; replay validation rejects images, thinking, calls, and
+results in system messages with `ReplayError::NonTextSystemContent` and the
+original message/block location. `MessageKind` does not determine authority.
+
+```rust
+use animist::history::{ContentBlock, Message, MessageKind, Role};
+
+let instruction = Message::builder()
+    .role(Role::System)
+    .kind(MessageKind::Observation)
+    .content(vec![ContentBlock::Text { text: "Keep the moon red.".into() }])
+    .build();
+```
+
+Place this message in the slice passed to `stream_message()` or insert a stored
+message with `CompactionEdit::Insert { before, message }`. The separate `system`
+argument remains supported and precedes history instructions. See
+[protocol placement limitations](providers-and-protocols.md#system-message-placement).
+
+System messages serialize with `"role": "system"` using the existing message
+shape. Existing `"user"` and `"assistant"` messages remain readable with no
+migration. Older consumers that only understand those roles cannot read system
+messages. Update exhaustive `Role` matches in downstream Rust code.
+
+`Alteration` receives system entries just like other active messages.
+Custom compactors may insert, replace, or explicitly remove them with the usual
+revision semantics; the manager does not enforce an instruction-retention policy.
+Custom transforms must preserve instruction authority and placement unless an
+intentional caller policy changes them.
+
 Each entry retains its original `StoredMessage`, a sequence of stored revisions,
 and an independent activation flag. Removing an entry deactivates it without
 discarding its original or revisions.
@@ -137,6 +170,13 @@ falling back to a completed tool-cycle boundary for single-prompt agentic chains
 It never splits a tool ID's calls and results, or removes an unresolved call or
 orphan result. At least one message is retained even when `keep_recent_messages`
 is zero. A short history or a history without a safe boundary is left unchanged.
+
+The first active system message is a hard retention boundary. VCC may compact a
+safe dialogue prefix before it, but retains that instruction and all following
+messages verbatim, including with a custom extractor. It never extracts,
+truncates, summarizes, or relabels system instructions. Consequently an early
+system instruction may prevent VCC compaction entirely; use a deliberate custom
+compactor if a different instruction-retention policy is required.
 
 The removed prefix becomes an assistant text summary with prompt, response,
 tool-input, and tool-result breadcrumbs in conversation order. Whitespace is
