@@ -156,13 +156,31 @@ fn unsigned_reasoning_is_rejected_instead_of_silently_omitted() {
             signature: None,
         }];
         content.extend(trailing);
-        let messages = vec![
+        let mut messages = vec![
             Message::builder()
                 .role(Role::Assistant)
                 .kind(MessageKind::Turn)
                 .content(content)
                 .build(),
         ];
+        if messages[0]
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+        {
+            messages.push(
+                Message::builder()
+                    .role(Role::User)
+                    .kind(MessageKind::Turn)
+                    .content(vec![ContentBlock::ToolResult {
+                        tool_use_id: "call-1".into(),
+                        content: "Found".into(),
+                        is_error: false,
+                        loaded_tools: vec![],
+                    }])
+                    .build(),
+            );
+        }
         let before = serde_json::to_value(&messages).unwrap();
         let model = Model::builder()
             .id("protocol-test")
@@ -326,6 +344,19 @@ fn default_chat_dialect_preserves_existing_assistant_wire_shapes() {
             "function":{"name":"lookup","arguments":"{\"path\":\"src\"}"}
         }]}),
     ];
+    messages.push(
+        Message::builder()
+            .role(Role::User)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".into(),
+                content: "Found".into(),
+                is_error: false,
+                loaded_tools: vec![],
+            }])
+            .build(),
+    );
+    expected.push(json!({"role":"tool","tool_call_id":"call-1","content":"Found"}));
     let model = Model::builder()
         .id("protocol-test")
         .provider(Provider::new(Ollama::new(OllamaConfig::default())))

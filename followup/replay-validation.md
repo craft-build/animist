@@ -1,5 +1,12 @@
 # Validate prepared conversation replay without losing opaque data
 
+**Status: implemented.** Shared `protocol::validate_replay` checks active and
+layer-prepared agent views and all built-in conversation adapter requests.
+Structured errors locate invalid exchanges and declarations without rewriting
+opaque data or archived history. Protocol-specific restrictions remain in
+adapters. See `tests/replay.rs` and the restored-history/layer agent tests.
+The original task below is retained as historical context.
+
 Work in Animist only. Read docs/history.md, docs/agents.md, and
 docs/providers-and-protocols.md.
 

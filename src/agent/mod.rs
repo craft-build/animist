@@ -188,16 +188,20 @@ impl Agent {
         if run.cancellation.is_cancelled() {
             return Err(AgentError::Cancelled);
         }
+        crate::protocol::validate_replay(std::slice::from_ref(input.message()), &[])?;
         self.history.add_stored(input).await;
         let mut last_response = None;
         let mut retries = 0;
         for step in 0..self.config.max_steps {
             let (response, expected) = loop {
+                let messages = self.history.current().await;
+                let definitions = self.tools.definitions();
+                crate::protocol::validate_replay(&messages, &definitions)?;
                 let request = StepRequest::builder()
                     .model(self.model.clone())
-                    .messages(self.history.current().await)
+                    .messages(messages)
                     .system(self.prompt.to_markdown())
-                    .tools(self.tools.definitions())
+                    .tools(definitions.clone())
                     .options(options.clone())
                     .build();
                 let request = match &self.layers {
@@ -208,7 +212,7 @@ impl Agent {
                     }
                     None => request,
                 };
-                let definitions = self.tools.definitions();
+                crate::protocol::validate_replay(&request.messages, &request.tools)?;
                 if request.tools.len() != definitions.len()
                     || request.tools.iter().zip(&definitions).any(|(a, b)| {
                         a.name != b.name

@@ -76,6 +76,21 @@ must still match the frozen registry. Response transformations intentionally aff
 replayed content; preserve opaque reasoning/signatures required by the protocol.
 Raw provider deltas are not retrospectively transformed.
 
+Before every inference attempt, the agent validates both the active durable
+conversation and the final layer-produced request view using
+`protocol::validate_replay`. This includes restored history and custom providers
+that do not use the built-in adapters. Malformed views fail with
+`AgentError::Replay` before invoking the provider; they are not provider retries.
+The submitted input remains recorded if later request preparation fails.
+
+Temporary context may be inserted between calls and results, and consecutive
+messages need not alternate roles. Request-only trimming must retain complete
+tool exchanges or remove them together; a missing result is not silently repaired.
+An interrupted execution's explicit error result is structurally complete.
+Historical tool names need not be currently registered or advertised.
+Tool declaration equality with the frozen registry remains a separate execution
+constraint. See the shared replay rules in `docs/providers-and-protocols.md`.
+
 ## Typed tools
 
 Implement `tool::ToolImpl` with typed deserializable `Args`, an `Output` implementing
@@ -201,6 +216,6 @@ without a provider usage report cannot be charged locally.
 ## Follow-ups
 
 See `followup/` for executable task prompts covering sampling,
-partial replay, replay validation, scheduling, and application-boundary audits.
+partial replay, scheduling, and application-boundary audits.
 Craft and Revelry migrations and additional provider integrations are outside
 this workstream.

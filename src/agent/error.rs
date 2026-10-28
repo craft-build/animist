@@ -3,6 +3,10 @@ use snafu::Snafu;
 #[derive(Snafu, Debug)]
 pub enum AgentError {
     #[snafu(transparent)]
+    Replay {
+        source: crate::protocol::ReplayError,
+    },
+    #[snafu(transparent)]
     Provider {
         source: crate::provider::ProviderError,
     },

@@ -142,6 +142,43 @@ Adapters must reject reasoning they cannot represent, including unsigned
 thinking without a supported replay field. Redacted payloads are not disposable.
 Any lossy history conversion must be an explicit caller operation.
 
+### Structural replay validation
+
+`protocol::validate_replay(messages, tools)` checks complete inference views.
+The agent and all built-in conversation adapters use this same read-only
+validator. Custom protocol implementations can call it directly.
+`ReplayError` links transparently through `ProtocolError` and `ProviderError`,
+or directly through `AgentError` for agent-side preparation failures.
+
+- Tool call IDs must be nonempty and unique across the supplied view; each call
+  needs exactly one later result. Results with empty IDs, no preceding call, or
+  a prior result are rejected. Results may arrive out of call order.
+- Tool calls and reasoning are assistant-only; results are user-only.
+  Tool call names and advertised declaration names must be nonempty.
+  Declaration names must be unique.
+- `loaded_tools` names must be nonempty and unique within each result. These
+  names and historical call names need not appear in current declarations:
+  old exchanges do not authorize new execution. There is no deferred-declaration
+  representation or dynamic activation contract today; built-in adapters still
+  reject all nonempty activation metadata.
+- An explicit interrupted/not-completed result closes a call structurally.
+  A bare unresolved call does not authorize inference, retries, or execution.
+
+Errors retain call IDs and zero-based `ReplayLocation { message, block }`
+positions. Duplicate errors include the first occurrence; declaration and
+activation-name errors include their list indices. The earliest unresolved call
+is reported when multiple results are missing.
+
+The validator does not require alternating roles, immediate result adjacency,
+or declaration visibility for historical calls. Observations and request-only
+text/image context can be interleaved with complete exchanges. It does not
+interpret, reserialize, or remove signatures, redacted reasoning, tool thought
+signatures, or multimodal data. Protocol-specific signature, image, input-shape,
+and wire-representation checks remain in the existing adapters; structural
+validity is not a guarantee of acceptance by every provider.
+
+### Tool-result representations
+
 Tool results use the shared non-recursive `history::ToolContent` representation.
 Anthropic Messages emits text/image blocks inside `tool_result.content` and
 validates inline image media types just as it does for user images. Responses

@@ -31,6 +31,7 @@ impl Protocol for Messages {
     type Options = AnthropicOptions;
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
+        crate::protocol::validate_replay(input.messages, input.tools)?;
         let mut messages = Vec::new();
         for message in input.messages {
             let mut content = Vec::new();

@@ -52,6 +52,19 @@ fn request<P: Protocol<Request = Value>>(
     messages: &[Message],
     options: &P::Options,
 ) -> animist::protocol::Result<Value> {
+    let mut conversation = vec![
+        Message::builder()
+            .role(Role::Assistant)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "screenshot".into(),
+                input: json!({}),
+                thought_signature: None,
+            }])
+            .build(),
+    ];
+    conversation.extend_from_slice(messages);
     let model = Model::builder()
         .id("fixture")
         .info(ModelInfo::default())
@@ -60,7 +73,7 @@ fn request<P: Protocol<Request = Value>>(
     protocol.request(
         ProtocolInput::builder()
             .model(&model)
-            .messages(messages)
+            .messages(conversation.as_slice())
             .system("")
             .tools(&[][..])
             .options(&RequestOptions::default())
@@ -74,7 +87,7 @@ fn rich_results_use_native_anthropic_and_responses_wire_content() {
     let messages = [result(rich_content(), vec![])];
     let anthropic = request(Messages, &messages, &AnthropicOptions::default()).unwrap();
     assert_eq!(
-        anthropic["messages"][0]["content"][0],
+        anthropic["messages"][1]["content"][0],
         json!({
             "type":"tool_result", "tool_use_id":"call-1", "is_error":true,
             "content":[
@@ -87,7 +100,7 @@ fn rich_results_use_native_anthropic_and_responses_wire_content() {
     );
     let responses = request(Responses, &messages, &OpenAiOptions::default()).unwrap();
     assert_eq!(
-        responses["input"][0],
+        responses["input"][1],
         json!({
             "type":"function_call_output", "call_id":"call-1",
             "output":[
@@ -125,21 +138,21 @@ fn text_parts_and_empty_results_keep_their_boundaries() {
         let messages = [result(content.clone(), vec![])];
         let anthropic = request(Messages, &messages, &AnthropicOptions::default()).unwrap();
         assert_eq!(
-            anthropic["messages"][0]["content"][0]["content"],
+            anthropic["messages"][1]["content"][0]["content"],
             serde_json::to_value(&content).unwrap()
         );
         let chat = request(ChatCompletions, &messages, &OpenAiOptions::default()).unwrap();
         let responses = request(Responses, &messages, &OpenAiOptions::default()).unwrap();
         if let [ToolContent::Text { text }] = content.0.as_slice() {
-            assert_eq!(chat["messages"][0]["content"], text.as_str());
-            assert_eq!(responses["input"][0]["output"], text.as_str());
+            assert_eq!(chat["messages"][1]["content"], text.as_str());
+            assert_eq!(responses["input"][1]["output"], text.as_str());
         } else {
             assert_eq!(
-                chat["messages"][0]["content"],
+                chat["messages"][1]["content"],
                 serde_json::to_value(&content).unwrap()
             );
             assert_eq!(
-                responses["input"][0]["output"].as_array().unwrap().len(),
+                responses["input"][1]["output"].as_array().unwrap().len(),
                 content.0.len()
             );
         }

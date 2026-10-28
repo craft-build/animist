@@ -24,6 +24,7 @@ impl Protocol for Responses {
     type Options = OpenAiOptions;
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
+        crate::protocol::validate_replay(input.messages, input.tools)?;
         let mut items = Vec::new();
         for message in input.messages {
             let mut parts = Vec::new();

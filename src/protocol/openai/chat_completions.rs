@@ -32,6 +32,7 @@ impl Protocol for ChatCompletions {
     type Options = OpenAiOptions;
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
+        crate::protocol::validate_replay(input.messages, input.tools)?;
         let mut messages = Vec::new();
         if !input.system.is_empty() {
             messages.push(ChatMessage::System {

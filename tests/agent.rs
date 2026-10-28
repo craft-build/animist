@@ -443,6 +443,150 @@ async fn typed_tools_run_and_request_is_prepared_again() {
     );
 }
 
+struct ReplayView {
+    corrupt: bool,
+}
+
+#[async_trait]
+impl LayerImpl for ReplayView {
+    async fn prepare_request(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        mut request: StepRequest,
+    ) -> animist::agent::Result<StepRequest> {
+        if self.corrupt {
+            request.messages.push(message(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "orphan-from-layer".into(),
+                    content: "invalid".into(),
+                    is_error: false,
+                    loaded_tools: vec![],
+                }],
+            ));
+        } else {
+            request.messages.insert(
+                1,
+                Message::builder()
+                    .role(Role::User)
+                    .kind(MessageKind::Observation)
+                    .content(vec![text("ephemeral context")])
+                    .build(),
+            );
+        }
+        Ok(request)
+    }
+}
+
+#[tokio::test]
+async fn restored_history_and_layer_views_are_checked_before_custom_provider_inference() {
+    use animist::{
+        history::{History, HistoryEntry},
+        protocol::{ReplayError, ReplayLocation},
+    };
+    let exchange = vec![
+        message(
+            Role::Assistant,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "private".into(),
+                    signature: Some("opaque-signature".into()),
+                },
+                call("old", "removed-tool", json!({})),
+            ],
+        ),
+        message(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "old".into(),
+                content: vec![ToolContent::Image {
+                    source: animist::history::ImageSource::from_bytes("image/png", &[1]),
+                }]
+                .into(),
+                is_error: true,
+                loaded_tools: vec![],
+            }],
+        ),
+    ];
+    for corrupt in [false, true] {
+        let history = History::new();
+        for message in &exchange {
+            history.add(message).await;
+        }
+        let entries: Vec<HistoryEntry> = serde_json::from_slice(
+            &serde_json::to_vec(history.snapshot().await.entries()).unwrap(),
+        )
+        .unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let agent = Agent::builder()
+            .model(model(
+                vec![response(vec![text("done")], StopReason::EndTurn)],
+                false,
+                requests.clone(),
+            ))
+            .history(History::from_entries(entries))
+            .layers(
+                AgentLayer::builder()
+                    .layer(Layer::new(ReplayView { corrupt }))
+                    .build(),
+            )
+            .build();
+        let outcome = agent.run(input(), RunOptions::default()).await;
+        if corrupt {
+            assert!(matches!(outcome, Err(AgentError::Replay {
+                source: ReplayError::OrphanResult { id, location }
+            }) if id == "orphan-from-layer" && location == ReplayLocation { message: 3, block: 0 }));
+            assert!(requests.lock().await.is_empty());
+        } else {
+            assert_eq!(outcome.unwrap().status, RunStatus::Completed);
+            let requests = requests.lock().await;
+            assert_eq!(requests[0][0], exchange[0]);
+            assert_eq!(requests[0][1].kind, MessageKind::Observation);
+            assert_eq!(requests[0][2], exchange[1]);
+        }
+        let durable = agent.history().current().await;
+        assert_eq!(&durable[..2], exchange.as_slice());
+        assert!(
+            !serde_json::to_string(&durable)
+                .unwrap()
+                .contains("ephemeral context")
+        );
+    }
+}
+
+#[tokio::test]
+async fn restored_unresolved_calls_fail_without_inference_or_implicit_repair() {
+    use animist::{
+        history::{History, HistoryEntry},
+        protocol::ReplayError,
+    };
+    let source = StoredMessage::builder()
+        .timestamp(jiff::Timestamp::now())
+        .message(message(
+            Role::Assistant,
+            vec![call("unresolved", "removed", json!({}))],
+        ))
+        .build();
+    let saved = serde_json::to_vec(&vec![
+        HistoryEntry::builder().source(source.clone()).build(),
+    ])
+    .unwrap();
+    let history = History::from_entries(serde_json::from_slice(&saved).unwrap());
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let agent = Agent::builder()
+        .model(model(vec![], false, requests.clone()))
+        .history(history)
+        .build();
+    assert!(matches!(agent.run(input(), RunOptions::default()).await,
+        Err(AgentError::Replay { source: ReplayError::MissingResult { id, .. } }) if id == "unresolved"));
+    assert!(requests.lock().await.is_empty());
+    assert_eq!(
+        agent.history().snapshot().await.entries()[0].latest(),
+        &source
+    );
+}
+
 #[tokio::test]
 async fn linked_layers_forward_turn_end_and_short_circuit_denial() {
     let log = Arc::new(Mutex::new(Vec::new()));

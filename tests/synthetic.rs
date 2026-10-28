@@ -472,7 +472,19 @@ fn shared_chat_adapter_replays_reasoning_only_when_enabled() {
             },
         ])
         .build();
-    let messages = [message];
+    let messages = [
+        message,
+        Message::builder()
+            .role(Role::User)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::ToolResult {
+                tool_use_id: "a".into(),
+                content: "Found".into(),
+                is_error: false,
+                loaded_tools: vec![],
+            }])
+            .build(),
+    ];
     let model = model();
     let options = RequestOptions::default();
     let input = ProtocolInput::builder()

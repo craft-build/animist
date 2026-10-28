@@ -12,12 +12,14 @@ mod decider;
 mod embedding;
 mod error;
 pub mod openai;
+mod replay;
 pub(crate) mod sse;
 pub mod system_one;
 
 pub use decider::DeciderProtocol;
 pub use embedding::EmbeddingProtocol;
 pub use error::ProtocolError;
+pub use replay::{ReplayError, ReplayLocation, validate_replay};
 pub use sse::SseError;
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 

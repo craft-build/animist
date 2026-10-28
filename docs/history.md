@@ -99,6 +99,19 @@ Compactors must preserve valid tool-call/result relationships and any reasoning
 payloads required by the selected protocol, or intentionally rewrite the whole
 related exchange.
 
+`History::from_entries()` restores data without performing inference validation.
+Use `protocol::validate_replay(&history.current().await, &tools)` to check an
+active view explicitly; the agent performs this check before inference and again
+after request transformations. Inactive originals and superseded revisions are
+not inference input and are not rejected for obsolete or incomplete exchanges.
+Errors identify zero-based message/block positions in the supplied view, not
+indices into the full snapshot.
+
+Validation never compacts, removes, revises, or fabricates content. A compaction
+plan that removes only one side of a tool exchange may commit as a history edit
+but will fail replay validation before inference. Repair requires an explicit
+caller edit; source messages and revisions remain available for that decision.
+
 ### VCC
 
 `VccCompactor` implements deterministic, no-LLM compaction using the latest active
