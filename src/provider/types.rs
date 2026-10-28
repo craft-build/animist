@@ -5,8 +5,16 @@ use crate::{
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 
-#[derive(Enum!, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub enum ProviderEvent {
+    /// A protocol-validated closed block, not authorization to execute it.
+    ContentComplete {
+        block: crate::history::ContentBlock,
+    },
+    /// Latest cumulative usage for this attempt, not an additive delta.
+    Usage {
+        usage: TokenUsage,
+    },
     TextDelta {
         text: String,
     },
@@ -45,7 +53,7 @@ pub struct RequestOptions {
     pub max_output_tokens: Option<u32>,
 }
 
-#[derive(Struct!, Builder, Deserialize, Serialize)]
+#[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct TokenUsage {
     #[serde(rename = "input_tokens")]

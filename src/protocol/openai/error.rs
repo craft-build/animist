@@ -81,6 +81,12 @@ pub enum OpenAIProtocolError {
     TruncatedChatStream { finish_reason: Option<StopReason> },
     #[snafu(display("Chat Completions stream has no finish reason"))]
     MissingFinishReason,
+    #[snafu(display("Chat Completions choice arrived after its finish reason"))]
+    ChoiceAfterFinish,
+    #[snafu(display("Missing or invalid output item index"))]
+    MissingOutputIndex,
+    #[snafu(display("Duplicate output item index {index}"))]
+    DuplicateOutputIndex { index: u64 },
     #[snafu(display("Incomplete identity for tool call index {index}"))]
     IncompleteToolIdentity { index: u64 },
     #[snafu(display("Duplicate tool item {id}"))]

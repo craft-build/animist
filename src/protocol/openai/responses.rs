@@ -165,6 +165,9 @@ impl Protocol for Responses {
     ) -> Result<StreamResponse> {
         let mut events = Events::new(response);
         let mut calls = BTreeMap::new();
+        let mut completed_items = BTreeMap::new();
+        let mut completed = 0_u64;
+        let mut checkpoint_blocked = false;
         let response = loop {
             let data = events
                 .next()
@@ -240,8 +243,61 @@ impl Protocol for Responses {
                         .await
                         .context(EventReceiverSnafu)?;
                 }
-                "response.completed" | "response.incomplete" => break event["response"].clone(),
+                "response.output_item.done" => {
+                    let index = event["output_index"]
+                        .as_u64()
+                        .context(MissingOutputIndexSnafu)?;
+                    ensure!(
+                        index >= completed && !completed_items.contains_key(&index),
+                        DuplicateOutputIndexSnafu { index }
+                    );
+                    let status = &event["item"]["status"];
+                    let blocks = if status.is_null() || status == "completed" {
+                        Some(Self::output_blocks(&event["item"])?)
+                    } else {
+                        None
+                    };
+                    completed_items.insert(index, blocks);
+                    while let Some(item) = completed_items.remove(&completed) {
+                        match item {
+                            Some(blocks) if !checkpoint_blocked => {
+                                for block in blocks {
+                                    event_tx
+                                        .send_async(ProviderEvent::ContentComplete { block })
+                                        .await
+                                        .context(EventReceiverSnafu)?;
+                                }
+                            }
+                            None => checkpoint_blocked = true,
+                            _ => {}
+                        }
+                        completed += 1;
+                    }
+                }
+                "response.completed" | "response.incomplete" => {
+                    if !event["response"]["usage"].is_null() {
+                        let usage =
+                            serde_json::from_value::<Usage>(event["response"]["usage"].clone())
+                                .context(DecodeUsageSnafu)?
+                                .into();
+                        event_tx
+                            .send_async(ProviderEvent::Usage { usage })
+                            .await
+                            .context(EventReceiverSnafu)?;
+                    }
+                    break event["response"].clone();
+                }
                 "response.failed" => {
+                    if let Ok(usage) =
+                        serde_json::from_value::<Usage>(event["response"]["usage"].clone())
+                    {
+                        event_tx
+                            .send_async(ProviderEvent::Usage {
+                                usage: usage.into(),
+                            })
+                            .await
+                            .context(EventReceiverSnafu)?;
+                    }
                     return Err(OpenAIProtocolError::ResponseFailed {
                         error: event["response"]["error"].clone(),
                     }
@@ -258,78 +314,26 @@ impl Protocol for Responses {
             .into());
         }
         let mut blocks = Vec::new();
-        for item in response["output"].as_array().context(MissingOutputSnafu)? {
-            match item["type"]
-                .as_str()
-                .context(MissingStringFieldSnafu { field: "type" })?
-            {
-                "message" => {
-                    for part in item["content"]
-                        .as_array()
-                        .context(MissingMessageContentSnafu)?
-                    {
-                        match part["type"]
-                            .as_str()
-                            .context(MissingStringFieldSnafu { field: "type" })?
-                        {
-                            "output_text" => blocks.push(ContentBlock::Text {
-                                text: part["text"]
-                                    .as_str()
-                                    .context(MissingStringFieldSnafu { field: "text" })?
-                                    .to_owned(),
-                            }),
-                            "refusal" => return Err(OpenAIProtocolError::Refusal.into()),
-                            kind => {
-                                return Err(OpenAIProtocolError::UnsupportedContentType {
-                                    kind: kind.into(),
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                }
-                "function_call" => {
-                    let id = item["call_id"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "call_id" })?;
-                    let name = item["name"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "name" })?
-                        .to_owned();
-                    let arguments = item["arguments"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "arguments" })?;
-                    let input =
-                        serde_json::from_str(arguments).context(DecodeToolArgumentsSnafu { id })?;
-                    blocks.push(ContentBlock::ToolUse {
-                        id: id.into(),
-                        name,
-                        input,
-                        thought_signature: None,
-                    });
-                }
-                "reasoning" => {
-                    let summary = item["summary"]
-                        .as_array()
-                        .map(|parts| {
-                            parts
-                                .iter()
-                                .filter_map(|part| part["text"].as_str())
-                                .collect::<Vec<_>>()
-                                .join("\n")
+        let mut checkpoint_prefix = !checkpoint_blocked;
+        for (index, item) in response["output"]
+            .as_array()
+            .context(MissingOutputSnafu)?
+            .iter()
+            .enumerate()
+        {
+            let item_blocks = Self::output_blocks(item)?;
+            checkpoint_prefix &= item["status"].is_null() || item["status"] == "completed";
+            if index as u64 >= completed && checkpoint_prefix {
+                for block in &item_blocks {
+                    event_tx
+                        .send_async(ProviderEvent::ContentComplete {
+                            block: block.clone(),
                         })
-                        .unwrap_or_default();
-                    blocks.push(ContentBlock::Thinking {
-                        thinking: summary,
-                        signature: Some(item.to_string()),
-                    });
-                }
-                kind => {
-                    return Err(
-                        OpenAIProtocolError::UnsupportedOutputItem { kind: kind.into() }.into(),
-                    );
+                        .await
+                        .context(EventReceiverSnafu)?;
                 }
             }
+            blocks.extend(item_blocks);
         }
         let stop = match response["status"].as_str() {
             Some("completed")
@@ -372,5 +376,83 @@ impl Protocol for Responses {
             .stop_reason(stop)
             .input_transformations(Vec::new())
             .build())
+    }
+}
+
+impl Responses {
+    fn output_blocks(item: &Value) -> Result<Vec<ContentBlock>> {
+        let mut blocks = Vec::new();
+        match item["type"]
+            .as_str()
+            .context(MissingStringFieldSnafu { field: "type" })?
+        {
+            "message" => {
+                for part in item["content"]
+                    .as_array()
+                    .context(MissingMessageContentSnafu)?
+                {
+                    match part["type"]
+                        .as_str()
+                        .context(MissingStringFieldSnafu { field: "type" })?
+                    {
+                        "output_text" => blocks.push(ContentBlock::Text {
+                            text: part["text"]
+                                .as_str()
+                                .context(MissingStringFieldSnafu { field: "text" })?
+                                .to_owned(),
+                        }),
+                        "refusal" => return Err(OpenAIProtocolError::Refusal.into()),
+                        kind => {
+                            return Err(OpenAIProtocolError::UnsupportedContentType {
+                                kind: kind.into(),
+                            }
+                            .into());
+                        }
+                    }
+                }
+            }
+            "function_call" => {
+                let id = item["call_id"]
+                    .as_str()
+                    .context(MissingStringFieldSnafu { field: "call_id" })?;
+                let name = item["name"]
+                    .as_str()
+                    .context(MissingStringFieldSnafu { field: "name" })?
+                    .to_owned();
+                let arguments = item["arguments"]
+                    .as_str()
+                    .context(MissingStringFieldSnafu { field: "arguments" })?;
+                let input =
+                    serde_json::from_str(arguments).context(DecodeToolArgumentsSnafu { id })?;
+                blocks.push(ContentBlock::ToolUse {
+                    id: id.into(),
+                    name,
+                    input,
+                    thought_signature: None,
+                });
+            }
+            "reasoning" => {
+                let summary = item["summary"]
+                    .as_array()
+                    .map(|parts| {
+                        parts
+                            .iter()
+                            .filter_map(|part| part["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default();
+                blocks.push(ContentBlock::Thinking {
+                    thinking: summary,
+                    signature: Some(item.to_string()),
+                });
+            }
+            kind => {
+                return Err(
+                    OpenAIProtocolError::UnsupportedOutputItem { kind: kind.into() }.into(),
+                );
+            }
+        }
+        Ok(blocks)
     }
 }

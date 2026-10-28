@@ -177,9 +177,26 @@ revisions remain available in history snapshots.
 Use the `Cancellation` in `RunOptions` and await the run to finalize cooperative
 cancellation. Dropping the run drops owned inference/tool futures but cannot undo
 external side effects; pending result text explicitly records this uncertainty.
-Providers currently cannot return replay-safe partial signed reasoning, so an
-incomplete inference response is not committed to history. Its already-emitted
-display deltas remain available.
+The agent uses an owned `InferenceExchange`. An incomplete inference response
+is not committed to history, even when it contains closed signed reasoning or
+complete tool calls. Its display deltas and protocol-validated content prefix
+are retained separately in `InterruptedAttempt::partial`. No incomplete attempt
+authorizes tool execution; the existing pending-result rule for already-started
+tools is unchanged.
+
+Cooperative cancellation returns `RunReport::interrupted_attempts`. Recovery and
+finalization hooks can inspect `RunContext::interrupted_attempts()`. An inference
+failure returns `AgentError::Inference { source, attempt }`, preserving the
+original `ProviderError` alongside the last interrupted attempt. This replaces
+the agent's former `AgentError::Provider` path for streaming failures; callers
+matching that path must update their recovery/error handling.
+Dropping the whole run still cancels owned work, but cannot return a partial
+report or run asynchronous finalization. Await cooperative cancellation when
+recovery data is needed.
+
+Retention is bounded per attempt by the exchange budget and per run by the
+configured step/retry limits. Reports hold shared `Arc` handles to interrupted
+attempts rather than duplicate their output.
 
 The agent does not overwrite external history edits. Exchange commits compare
 the expected history and use the existing optimistic atomic compaction contract.
@@ -200,22 +217,36 @@ Provider events carry run/step/attempt identity. Other events report tool start,
 progress, structured failure, completion, step completion, retries, and final
 status. These events are runtime observations, not a durable persistence backend.
 
+Attempt IDs are zero-based and monotonic within a run, across both steps and
+retries. `AttemptInterrupted` identifies abandoned output; `Retrying::attempt`
+identifies the next inference attempt, not a separate retry counter. Previously
+visible text is not retracted or concatenated into the next response. Consumers
+must keep attempts separate and explicitly mark abandoned text as superseded
+when a retry succeeds. Checkpoint events are not new display deltas.
+
 `RunStats` uses atomic counters for completed model steps, inference attempts,
 executed tool calls, and the latest reported input size. Usage/cost aggregation
 uses a short async lock and records the actual request model before response
 layers run. `StatsSnapshot` includes usage by `(provider, model)` and the count of
-unpriced completed steps. Cost is a known subtotal when that count is nonzero,
+unpriced reported attempts. Cost is a known subtotal when that count is nonzero,
 not a claim that missing prices are zero. Token totals saturate at the existing
 `TokenUsage` field width. Context size is the latest reported input count, not a
 prediction of the next request or cumulative usage.
 
 Counters and usage are not one atomic transaction; live snapshots may observe
-adjacent updates. Final reports provide settled statistics. Failed attempts
-without a provider usage report cannot be charged locally.
+adjacent updates. Final reports provide settled statistics.
+Each completed attempt records its final response usage once. Each interrupted
+attempt records its latest checkpoint usage once, including zero-token reports;
+incremental checkpoints are never added together. `reported_incomplete_attempts`
+and `unreported_incomplete_attempts` distinguish reported from unknown usage.
+`unpriced_attempts` counts all unpriced reported attempts; `unpriced_steps`
+continues counting only unpriced completed steps. Partial attempts do not
+increment `steps`. Unknown usage is not zero-cost inference and cannot be
+charged locally.
 
 ## Follow-ups
 
 See `followup/` for executable task prompts covering sampling,
-partial replay, scheduling, and application-boundary audits.
+scheduling, and application-boundary audits.
 Craft and Revelry migrations and additional provider integrations are outside
 this workstream.

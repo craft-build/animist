@@ -7,6 +7,7 @@ pub mod bedrock;
 mod decider;
 mod embedding;
 pub(crate) mod error;
+mod exchange;
 pub mod llama_cpp;
 mod model;
 pub mod ollama;
@@ -26,6 +27,7 @@ pub use embedding::{
     EmbeddingUsage,
 };
 pub use error::ProviderError;
+pub use exchange::{ExchangeEvent, InferenceExchange, PartialResponse};
 use flume::Sender;
 pub use model::{
     Config, Effort, FastPricing, Features, Model, ModelInfo, Overrides, Pricing, Thinking,
@@ -47,6 +49,7 @@ pub trait Provider {
 
     /// Emits incremental events and returns the assembled response.
     /// Errors return through `Result`; already-emitted events remain available.
+    /// Emit closed-content and cumulative-usage checkpoints for partial recovery.
     /// Dropping this future cancels the request; implementations must not detach it.
     async fn stream_message(
         &self,

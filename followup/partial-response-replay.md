@@ -1,5 +1,12 @@
 # Define cancellation-safe partial inference results
 
+Status: implemented. `InferenceExchange` retains bounded display output,
+protocol-validated closed content, and latest usage across cancellation and
+errors. The agent exposes interrupted attempts without automatic replay or tool
+execution. See `docs/providers-and-protocols.md` and `docs/agents.md`.
+
+The original implementation prompt follows for historical context.
+
 Implement in Animist without changing Craft or Revelry. Read the agent, provider,
 protocol, and history contracts before editing.
 

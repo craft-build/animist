@@ -212,7 +212,9 @@ async fn provider_auth_and_typed_request_translation_work_over_http() {
         }]
     );
     assert_eq!(
-        rx.try_recv().unwrap(),
+        rx.try_iter()
+            .find(|event| matches!(event, ProviderEvent::TextDelta { .. }))
+            .unwrap(),
         ProviderEvent::TextDelta {
             text: "Héllo".into()
         }
@@ -314,7 +316,15 @@ async fn thinking_signatures_redaction_and_interleaved_tools_survive_replay() {
             },
         ]
     );
-    let events: Vec<_> = rx.try_iter().collect();
+    let events: Vec<_> = rx
+        .try_iter()
+        .filter(|event| {
+            !matches!(
+                event,
+                ProviderEvent::ContentComplete { .. } | ProviderEvent::Usage { .. }
+            )
+        })
+        .collect();
     assert_eq!(events.len(), 8);
     assert!(matches!(&events[0], ProviderEvent::ThinkingDelta { text } if text == "Plan"));
     assert!(matches!(&events[6], ProviderEvent::ToolInputDelta { id, .. } if id == "call-b"));
@@ -894,7 +904,9 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
         source: ProtocolError::Anthropic { source: AnthropicProtocolError::Api { error } }
     } if error == payload));
     assert_eq!(
-        rx.try_recv().unwrap(),
+        rx.try_iter()
+            .find(|event| matches!(event, ProviderEvent::TextDelta { .. }))
+            .unwrap(),
         ProviderEvent::TextDelta {
             text: "partial".into()
         }
@@ -989,7 +1001,7 @@ async fn dropping_the_future_cancels_the_http_exchange() {
         let stream = provider.stream_message(&model, &[], "", &[], &tx, RequestOptions::default());
         tokio::pin!(stream);
         tokio::select! {
-            event = rx.recv_async() => assert!(matches!(event.unwrap(), ProviderEvent::TextDelta { .. })),
+            event = rx.recv_async() => assert!(matches!(event.unwrap(), ProviderEvent::TextDelta { .. } | ProviderEvent::Usage { .. })),
             result = &mut stream => panic!("Stream finished unexpectedly: {result:?}"),
             _ = tokio::time::sleep(Duration::from_secs(3)) => panic!("No event received"),
         }

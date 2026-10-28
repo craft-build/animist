@@ -10,8 +10,8 @@ pub use error::AgentError;
 pub use layer::{AgentLayer, Layer, LayerImpl, Recovery, ToolDecision};
 pub use prompt::{Prompt, Section};
 pub use run::{
-    AgentEvent, Cancellation, RunContext, RunOptions, RunReport, RunStats, RunStatus,
-    StatsSnapshot, StepRequest, ToolFailure,
+    AgentEvent, Cancellation, InterruptedAttempt, RunContext, RunOptions, RunReport, RunStats,
+    RunStatus, StatsSnapshot, StepRequest, ToolFailure,
 };
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
         CompactionEdit, CompactionPlan, Compactor, ContentBlock, History, HistoryEntry,
         HistorySnapshot, Message, Role, StoredMessage,
     },
-    provider::{Model, ProviderEvent, StopReason, StreamResponse},
+    provider::{ExchangeEvent, InferenceExchange, Model, StopReason, StreamResponse},
 };
 use async_trait::async_trait;
 use bon::Builder;
@@ -100,6 +100,7 @@ impl Agent {
             events: options.events,
             stopped: Mutex::new(None),
             tool_failures: Mutex::new(Vec::new()),
+            interrupted_attempts: Mutex::new(Vec::new()),
         };
         let result = self.run_inner(input, options.request, &run).await;
         let status = match &result {
@@ -130,6 +131,7 @@ impl Agent {
                     response: None,
                     stats: run.stats.snapshot().await,
                     tool_failures: run.tool_failures().await,
+                    interrupted_attempts: run.interrupted_attempts().await,
                 })
             }
             Err(error) => match cleanup {
@@ -225,7 +227,7 @@ impl Agent {
                 let expected = self.history.snapshot().await;
                 match self.stream(run, step.into(), &request).await {
                     Ok(response) => break (response, expected),
-                    Err(error @ AgentError::Provider { .. })
+                    Err(error @ AgentError::Inference { .. })
                         if retries < self.config.max_retries =>
                     {
                         let recovery = match &self.layers {
@@ -241,7 +243,7 @@ impl Agent {
                         }
                         retries += 1;
                         run.emit(AgentEvent::Retrying {
-                            attempt: retries.into(),
+                            attempt: run.stats.attempts.load(Ordering::Relaxed),
                         })
                         .await;
                     }
@@ -419,6 +421,7 @@ impl Agent {
                     response: last_response,
                     stats: run.stats.snapshot().await,
                     tool_failures: run.tool_failures().await,
+                    interrupted_attempts: run.interrupted_attempts().await,
                 });
             }
         }
@@ -428,6 +431,7 @@ impl Agent {
             response: last_response,
             stats: run.stats.snapshot().await,
             tool_failures: run.tool_failures().await,
+            interrupted_attempts: run.interrupted_attempts().await,
         })
     }
 
@@ -437,33 +441,80 @@ impl Agent {
         step: u64,
         request: &StepRequest,
     ) -> Result<StreamResponse> {
-        let (tx, rx) = flume::bounded::<ProviderEvent>(64);
         let attempt = run.stats.attempts.fetch_add(1, Ordering::Relaxed);
-        let future = request.model.provider.stream_message(
-            &request.model,
-            &request.messages,
-            &request.system,
-            &request.tools,
-            &tx,
-            request.options.clone(),
-        );
-        tokio::pin!(future);
-        loop {
-            tokio::select! {
+        let mut exchange = InferenceExchange::new(|tx| async move {
+            request
+                .model
+                .provider
+                .stream_message(
+                    &request.model,
+                    &request.messages,
+                    &request.system,
+                    &request.tools,
+                    &tx,
+                    request.options.clone(),
+                )
+                .await
+        });
+        let failure = loop {
+            let event = tokio::select! {
                 biased;
-                _ = run.cancellation.cancelled() => return Err(AgentError::Cancelled),
-                event = rx.recv_async() => if let Ok(event) = event {
-                    run.emit(AgentEvent::Provider { run_id: run.id, step, attempt, event }).await;
-                },
-                response = &mut future => {
-                    while let Ok(event) = rx.try_recv() {
-                        run.emit(AgentEvent::Provider { run_id: run.id, step, attempt, event }).await;
-                    }
-                    let response = response?;
-                    run.stats.record(&request.model, &response.usage).await;
+                _ = run.cancellation.cancelled() => break None,
+                event = exchange.next() => event,
+            };
+            match event {
+                Some(ExchangeEvent::Provider(event)) => {
+                    run.emit(AgentEvent::Provider {
+                        run_id: run.id,
+                        step,
+                        attempt,
+                        event,
+                    })
+                    .await;
+                }
+                Some(ExchangeEvent::Finished(Ok(response))) => {
+                    run.stats
+                        .record(&request.model, &response.usage, true)
+                        .await;
                     return Ok(response);
                 }
+                Some(ExchangeEvent::Finished(Err(error))) => break Some(error),
+                None => break None,
             }
+        };
+        let partial = exchange.cancel().clone();
+        if let Some(usage) = &partial.usage {
+            run.stats.record(&request.model, usage, false).await;
+        } else {
+            run.stats
+                .unreported_incomplete_attempts
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        let interrupted = std::sync::Arc::new(InterruptedAttempt {
+            run_id: run.id,
+            step,
+            attempt,
+            provider: request.model.provider.name().to_owned(),
+            model: request.model.id.clone(),
+            cancelled: failure.is_none(),
+            partial,
+        });
+        run.interrupted_attempts
+            .lock()
+            .await
+            .push(interrupted.clone());
+        run.emit(AgentEvent::AttemptInterrupted {
+            run_id: run.id,
+            step,
+            attempt,
+        })
+        .await;
+        match failure {
+            Some(source) => Err(AgentError::Inference {
+                source,
+                attempt: interrupted,
+            }),
+            None => Err(AgentError::Cancelled),
         }
     }
 

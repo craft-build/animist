@@ -254,6 +254,7 @@ pub async fn run(provider: Provider, models: Vec<ModelInfo>, args: Arguments) ->
             let mut previous = "";
             while let Ok(event) = rx.recv_async().await {
                 let (label, text) = match event {
+                    ProviderEvent::ContentComplete { .. } | ProviderEvent::Usage { .. } => continue,
                     ProviderEvent::TextDelta { text } => ("text", text),
                     ProviderEvent::ThinkingDelta { text } => ("thinking", text),
                     ProviderEvent::ToolUseStart { id, name } => ("tool", format!("{name} ({id})")),

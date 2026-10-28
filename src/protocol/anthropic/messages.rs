@@ -160,6 +160,7 @@ impl Protocol for Messages {
     ) -> Result<StreamResponse> {
         let mut events = Events::new(response);
         let mut blocks: Vec<BlockState> = Vec::new();
+        let mut completed = 0;
         let mut started = false;
         let mut message_delta = false;
         let mut stop_reason = None;
@@ -190,6 +191,12 @@ impl Protocol for Messages {
                         )
                         .cache_read(message.usage.cache_read_input_tokens.unwrap_or_default())
                         .build();
+                    event_tx
+                        .send_async(ProviderEvent::Usage {
+                            usage: usage.clone(),
+                        })
+                        .await
+                        .context(EventReceiverSnafu)?;
                 }
                 Event::ContentBlockStart {
                     index,
@@ -359,6 +366,15 @@ impl Protocol for Messages {
                         );
                     }
                     block.open = false;
+                    while let Some(block) = blocks.get(completed).filter(|block| !block.open) {
+                        event_tx
+                            .send_async(ProviderEvent::ContentComplete {
+                                block: block.content.clone(),
+                            })
+                            .await
+                            .context(EventReceiverSnafu)?;
+                        completed += 1;
+                    }
                 }
                 Event::MessageDelta {
                     delta,
@@ -385,6 +401,12 @@ impl Protocol for Messages {
                     if let Some(tokens) = update.cache_read_input_tokens {
                         usage.cache_read = tokens;
                     }
+                    event_tx
+                        .send_async(ProviderEvent::Usage {
+                            usage: usage.clone(),
+                        })
+                        .await
+                        .context(EventReceiverSnafu)?;
                 }
                 Event::MessageStop => {
                     ensure!(

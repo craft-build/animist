@@ -381,7 +381,12 @@ async fn final_done_event_does_not_require_a_trailing_blank_line() {
                 text: "Two sentences. Complete.".into()
             }]
         );
-        assert_eq!(rx.len(), 1);
+        assert_eq!(
+            rx.try_iter()
+                .filter(|event| matches!(event, animist::provider::ProviderEvent::TextDelta { .. }))
+                .count(),
+            1
+        );
         task.await.unwrap();
     }
 }
@@ -682,7 +687,7 @@ async fn downstream_provider_streams_and_sends_only_wire_fields() {
         .await
         .unwrap();
     assert_eq!(response.stop_reason, Some(StopReason::ToolUse));
-    assert_eq!(rx.len(), 9);
+    assert_eq!(rx.len(), 14);
     assert_eq!(response.usage.input, 80);
     assert_eq!(response.usage.cache_read, 20);
     assert!(

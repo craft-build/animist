@@ -302,7 +302,7 @@ async fn responses_streams_and_replays_encrypted_reasoning() {
     assert!(
         matches!(&response.message.content[0], ContentBlock::Thinking { signature: Some(signature), .. } if serde_json::from_str::<Value>(signature).unwrap() == reasoning)
     );
-    assert_eq!(rx.try_iter().count(), 4);
+    assert_eq!(rx.try_iter().count(), 7);
     let (headers, request) = task.await.unwrap();
     assert!(headers.starts_with("POST /v1/responses "));
     assert_eq!(request["store"], false);

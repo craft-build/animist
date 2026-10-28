@@ -100,6 +100,11 @@ pub enum AgentEvent {
     Retrying {
         attempt: u64,
     },
+    AttemptInterrupted {
+        run_id: u64,
+        step: u64,
+        attempt: u64,
+    },
     Finished {
         run_id: u64,
         status: RunStatus,
@@ -113,6 +118,8 @@ pub struct RunStats {
     pub(crate) attempts: AtomicU64,
     pub(crate) tool_calls: AtomicU64,
     pub(crate) context_size: AtomicU64,
+    pub(crate) reported_incomplete_attempts: AtomicU64,
+    pub(crate) unreported_incomplete_attempts: AtomicU64,
     usage: Mutex<UsageTotals>,
 }
 
@@ -120,6 +127,7 @@ pub struct RunStats {
 struct UsageTotals {
     usage: TokenUsage,
     unpriced_steps: u64,
+    unpriced_attempts: u64,
     by_model: BTreeMap<(String, String), TokenUsage>,
 }
 
@@ -131,6 +139,9 @@ pub struct StatsSnapshot {
     pub context_size: u64,
     pub usage: TokenUsage,
     pub unpriced_steps: u64,
+    pub unpriced_attempts: u64,
+    pub reported_incomplete_attempts: u64,
+    pub unreported_incomplete_attempts: u64,
     pub by_model: BTreeMap<(String, String), TokenUsage>,
 }
 
@@ -144,11 +155,16 @@ impl RunStats {
             context_size: self.context_size.load(Ordering::Relaxed),
             usage: totals.usage.clone(),
             unpriced_steps: totals.unpriced_steps,
+            unpriced_attempts: totals.unpriced_attempts,
+            reported_incomplete_attempts: self.reported_incomplete_attempts.load(Ordering::Relaxed),
+            unreported_incomplete_attempts: self
+                .unreported_incomplete_attempts
+                .load(Ordering::Relaxed),
             by_model: totals.by_model.clone(),
         }
     }
 
-    pub(crate) async fn record(&self, model: &Model, usage: &TokenUsage) {
+    pub(crate) async fn record(&self, model: &Model, usage: &TokenUsage, completed: bool) {
         let mut totals = self.usage.lock().await;
         let model_usage = totals
             .by_model
@@ -173,11 +189,19 @@ impl RunStats {
         if let Some(cost) = usage.cost {
             totals.usage.cost = Some(totals.usage.cost.unwrap_or_default() + cost);
         } else {
-            totals.unpriced_steps += 1;
+            totals.unpriced_attempts += 1;
+            if completed {
+                totals.unpriced_steps += 1;
+            }
         }
         self.context_size
             .store(u64::from(usage.input), Ordering::Relaxed);
-        self.steps.fetch_add(1, Ordering::Relaxed);
+        if completed {
+            self.steps.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.reported_incomplete_attempts
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -198,9 +222,14 @@ pub struct RunContext {
     pub(crate) events: Option<Sender<AgentEvent>>,
     pub(crate) stopped: Mutex<Option<String>>,
     pub(crate) tool_failures: Mutex<Vec<ToolFailure>>,
+    pub(crate) interrupted_attempts: Mutex<Vec<Arc<InterruptedAttempt>>>,
 }
 
 impl RunContext {
+    pub async fn interrupted_attempts(&self) -> Vec<Arc<InterruptedAttempt>> {
+        self.interrupted_attempts.lock().await.clone()
+    }
+
     pub async fn tool_failures(&self) -> Vec<ToolFailure> {
         self.tool_failures.lock().await.clone()
     }
@@ -240,4 +269,17 @@ pub struct RunReport {
     pub response: Option<StoredMessage>,
     pub stats: StatsSnapshot,
     pub tool_failures: Vec<ToolFailure>,
+    pub interrupted_attempts: Vec<Arc<InterruptedAttempt>>,
+}
+
+/// Recovery data, never automatically committed or executed.
+#[derive(crate::Struct!)]
+pub struct InterruptedAttempt {
+    pub run_id: u64,
+    pub step: u64,
+    pub attempt: u64,
+    pub provider: String,
+    pub model: String,
+    pub cancelled: bool,
+    pub partial: crate::provider::PartialResponse,
 }

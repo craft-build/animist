@@ -2,6 +2,11 @@ use snafu::Snafu;
 
 #[derive(Snafu, Debug)]
 pub enum AgentError {
+    #[snafu(display("Inference attempt {} failed: {source}", attempt.attempt))]
+    Inference {
+        source: crate::provider::ProviderError,
+        attempt: std::sync::Arc<super::InterruptedAttempt>,
+    },
     #[snafu(transparent)]
     Replay {
         source: crate::protocol::ReplayError,

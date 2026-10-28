@@ -199,6 +199,7 @@ impl Protocol for ChatCompletions {
         let mut content = String::new();
         let mut reasoning = String::new();
         let mut calls: BTreeMap<u64, Call> = BTreeMap::new();
+        let mut blocks = Vec::new();
         let mut usage = TokenUsage::default();
         let mut stop = None;
         let mut done = false;
@@ -217,8 +218,15 @@ impl Protocol for ChatCompletions {
             let chunk: ChatChunk = serde_json::from_value(value).context(DecodeChunkSnafu)?;
             if let Some(tokens) = chunk.usage {
                 usage = tokens.into();
+                event_tx
+                    .send_async(ProviderEvent::Usage {
+                        usage: usage.clone(),
+                    })
+                    .await
+                    .context(EventReceiverSnafu)?;
             }
             for choice in chunk.choices {
+                ensure!(stop.is_none(), ChoiceAfterFinishSnafu);
                 ensure!(
                     choice.index == 0,
                     MultipleChoicesSnafu {
@@ -309,6 +317,43 @@ impl Protocol for ChatCompletions {
                             );
                         }
                     });
+                    if !reasoning.is_empty() {
+                        blocks.push(ContentBlock::Thinking {
+                            thinking: std::mem::take(&mut reasoning),
+                            signature: None,
+                        });
+                    }
+                    if !content.is_empty() {
+                        blocks.push(ContentBlock::Text {
+                            text: std::mem::take(&mut content),
+                        });
+                    }
+                    for block in &blocks {
+                        event_tx
+                            .send_async(ProviderEvent::ContentComplete {
+                                block: block.clone(),
+                            })
+                            .await
+                            .context(EventReceiverSnafu)?;
+                    }
+                    for (index, call) in std::mem::take(&mut calls) {
+                        ensure!(call.started, IncompleteToolIdentitySnafu { index });
+                        let input = serde_json::from_str(&call.arguments)
+                            .context(DecodeToolArgumentsSnafu { id: &call.id })?;
+                        let block = ContentBlock::ToolUse {
+                            id: call.id,
+                            name: call.name,
+                            input,
+                            thought_signature: None,
+                        };
+                        event_tx
+                            .send_async(ProviderEvent::ContentComplete {
+                                block: block.clone(),
+                            })
+                            .await
+                            .context(EventReceiverSnafu)?;
+                        blocks.push(block);
+                    }
                 }
             }
         }
@@ -319,27 +364,6 @@ impl Protocol for ChatCompletions {
             }
         );
         let stop = stop.context(MissingFinishReasonSnafu)?;
-        let mut blocks = Vec::new();
-        if !reasoning.is_empty() {
-            blocks.push(ContentBlock::Thinking {
-                thinking: reasoning,
-                signature: None,
-            });
-        }
-        if !content.is_empty() {
-            blocks.push(ContentBlock::Text { text: content });
-        }
-        for (index, call) in calls {
-            ensure!(call.started, IncompleteToolIdentitySnafu { index });
-            let input = serde_json::from_str(&call.arguments)
-                .context(DecodeToolArgumentsSnafu { id: &call.id })?;
-            blocks.push(ContentBlock::ToolUse {
-                id: call.id,
-                name: call.name,
-                input,
-                thought_signature: None,
-            });
-        }
         Ok(StreamResponse::builder()
             .message(
                 Message::builder()

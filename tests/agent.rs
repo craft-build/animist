@@ -34,6 +34,7 @@ struct Script {
     replies: Mutex<VecDeque<Reply>>,
     requests: Arc<Mutex<Vec<Vec<Message>>>>,
     hanging: bool,
+    checkpoints: Vec<ProviderEvent>,
 }
 
 #[async_trait]
@@ -58,6 +59,9 @@ impl ProviderImpl for Script {
             })
             .await
             .unwrap();
+        for event in &self.checkpoints {
+            events.send_async(event.clone()).await.unwrap();
+        }
         if self.hanging {
             std::future::pending::<()>().await;
         }
@@ -130,6 +134,7 @@ fn model(replies: Vec<Reply>, hanging: bool, requests: Arc<Mutex<Vec<Vec<Message
             replies: Mutex::new(replies.into()),
             requests,
             hanging,
+            checkpoints: Vec::new(),
         })))
         .info(ModelInfo::default())
         .build()
@@ -717,6 +722,9 @@ async fn retries_are_bounded_and_reprepare_requests() {
     let report = agent.run(input(), RunOptions::default()).await.unwrap();
     assert_eq!(report.stats.attempts, 2);
     assert_eq!(report.stats.steps, 1);
+    assert_eq!(report.stats.unreported_incomplete_attempts, 1);
+    assert_eq!(report.interrupted_attempts[0].partial.display_text, "delta");
+    assert!(report.interrupted_attempts[0].partial.usage.is_none());
     assert_eq!(requests.lock().await.len(), 2);
     assert_eq!(
         log.lock()
@@ -1093,8 +1101,135 @@ async fn retry_budget_exhaustion_preserves_provider_error() {
         .layers(AgentLayer::builder().layer(Layer::new(retry)).build())
         .build();
     assert!(matches!(agent.run(input(), RunOptions::default()).await,
-        Err(AgentError::Provider { source: animist::provider::ProviderError::Http { body, .. } }) if body == "second"));
+        Err(AgentError::Inference { source: animist::provider::ProviderError::Http { body, .. }, .. }) if body == "second"));
     assert_eq!(requests.lock().await.len(), 2);
+}
+
+fn partial_attempt_model(hanging: bool, requests: Arc<Mutex<Vec<Vec<Message>>>>) -> Model {
+    Model::builder()
+        .id("partial-script")
+        .provider(Provider::new(Script {
+            replies: Mutex::new(
+                vec![
+                    Err(animist::provider::ProviderError::Http {
+                        status: 503,
+                        body: "original failure".into(),
+                    }),
+                    response(vec![text("recovered")], StopReason::EndTurn),
+                ]
+                .into(),
+            ),
+            requests,
+            hanging,
+            checkpoints: vec![
+                ProviderEvent::ContentComplete {
+                    block: call("not-executed", "echo", json!({"text":"never"})),
+                },
+                ProviderEvent::Usage {
+                    usage: TokenUsage::builder()
+                        .input(15_u32)
+                        .output(1_u32)
+                        .cache_creation(0_u32)
+                        .cache_read(0_u32)
+                        .build(),
+                },
+                ProviderEvent::Usage {
+                    usage: TokenUsage::builder()
+                        .input(15_u32)
+                        .output(3_u32)
+                        .cache_creation(0_u32)
+                        .cache_read(0_u32)
+                        .build(),
+                },
+            ],
+        }))
+        .info(ModelInfo::default())
+        .build()
+}
+
+#[tokio::test]
+async fn recovered_partial_attempts_keep_identity_and_usage_without_replaying_or_executing_them() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let executions = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(executions.clone())).unwrap();
+    let mut retry = trace("retry", Default::default());
+    retry.retry = true;
+    let agent = Agent::builder()
+        .model(partial_attempt_model(false, requests.clone()))
+        .config(AgentConfig::builder().max_retries(1_u32).build())
+        .tools(tools)
+        .layers(AgentLayer::builder().layer(Layer::new(retry)).build())
+        .build();
+    let (tx, rx) = flume::unbounded();
+    let report = agent
+        .run(input(), RunOptions::builder().events(tx).build())
+        .await
+        .unwrap();
+    assert_eq!(report.stats.steps, 1);
+    assert_eq!(report.stats.attempts, 2);
+    assert_eq!(report.stats.reported_incomplete_attempts, 1);
+    assert_eq!(report.stats.unreported_incomplete_attempts, 0);
+    assert_eq!(report.stats.usage.input, 25);
+    assert_eq!(report.stats.usage.output, 5);
+    assert_eq!(report.stats.unpriced_attempts, 2);
+    assert_eq!(report.stats.unpriced_steps, 1);
+    assert_eq!(executions.load(Ordering::Relaxed), 0);
+    let partial = &report.interrupted_attempts[0];
+    assert_eq!(partial.run_id, report.id);
+    assert_eq!(partial.step, 0);
+    assert_eq!(partial.attempt, 0);
+    assert_eq!(partial.model, "partial-script");
+    assert!(!partial.cancelled);
+    assert_eq!(partial.partial.display_text, "delta");
+    assert!(
+        matches!(&partial.partial.content[0], ContentBlock::ToolUse { id, .. } if id == "not-executed")
+    );
+    let requests = requests.lock().await;
+    assert_eq!(requests[0], requests[1]);
+    assert_eq!(agent.history().current().await.len(), 2);
+    let events: Vec<_> = rx.try_iter().collect();
+    assert!(events.iter().any(|event| matches!(event, AgentEvent::AttemptInterrupted {run_id, step:0, attempt:0} if *run_id == report.id)));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Provider { attempt: 1, .. }))
+    );
+}
+
+#[tokio::test]
+async fn cooperative_inference_cancellation_returns_partial_attempt_without_committing_it() {
+    let agent = Agent::builder()
+        .model(partial_attempt_model(true, Default::default()))
+        .build();
+    let cancellation = Cancellation::default();
+    let (tx, rx) = flume::unbounded();
+    let running = agent.run(
+        input(),
+        RunOptions::builder()
+            .cancellation(cancellation.clone())
+            .events(tx)
+            .build(),
+    );
+    tokio::pin!(running);
+    loop {
+        tokio::select! {
+            result = &mut running => panic!("unexpected result {result:?}"),
+            event = rx.recv_async() => if matches!(event.unwrap(), AgentEvent::Provider {
+                event: ProviderEvent::Usage { usage }, ..
+            } if usage.output == 3) { break; }
+        }
+    }
+    cancellation.cancel();
+    let report = running.await.unwrap();
+    assert_eq!(report.status, RunStatus::Cancelled);
+    assert_eq!(report.stats.steps, 0);
+    assert_eq!(report.stats.reported_incomplete_attempts, 1);
+    assert_eq!(report.stats.usage.output, 3);
+    assert_eq!(report.interrupted_attempts.len(), 1);
+    assert!(report.interrupted_attempts[0].cancelled);
+    assert_eq!(report.interrupted_attempts[0].partial.content.len(), 1);
+    assert_eq!(agent.history().current().await.len(), 1);
 }
 
 #[tokio::test]

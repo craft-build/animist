@@ -13,6 +13,8 @@ pub enum SseError {
     EventTooLarge { limit: usize },
     #[snafu(display("SSE buffer exceeds {limit} bytes"))]
     BufferTooLarge { limit: usize },
+    #[snafu(display("SSE exchange exceeds {limit} bytes"))]
+    ExchangeTooLarge { limit: usize },
 }
 
 pub(crate) struct Events {
@@ -23,6 +25,7 @@ pub(crate) struct Events {
     data_len: usize,
     first_line: bool,
     eof: bool,
+    received: usize,
 }
 
 impl Events {
@@ -35,6 +38,7 @@ impl Events {
             data_len: 0,
             first_line: true,
             eof: false,
+            received: 0,
         }
     }
 
@@ -118,7 +122,16 @@ impl Events {
 
     async fn read(&mut self) -> Result<(), SseError> {
         match self.response.chunk().await.context(ReadStreamSnafu)? {
-            Some(bytes) => self.buffer.extend_from_slice(&bytes),
+            Some(bytes) => {
+                self.received = self.received.saturating_add(bytes.len());
+                ensure!(
+                    self.received <= 16 * 1024 * 1024,
+                    ExchangeTooLargeSnafu {
+                        limit: 16 * 1024 * 1024_usize
+                    }
+                );
+                self.buffer.extend_from_slice(&bytes);
+            }
             None => self.eof = true,
         }
         ensure!(

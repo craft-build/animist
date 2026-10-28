@@ -196,9 +196,80 @@ All implemented adapters reject nonempty `loaded_tools`: deferred activation
 is not implemented, and activation metadata must not disappear silently.
 Concrete protocol errors remain linked through `ProtocolError`/`ProviderError`.
 
-Keep request work owned by the streaming future so dropping it cancels the
-request. Errors return through the existing result path; an additional error
-event is not required merely because partial events were already emitted.
+### Cancellation-safe partial results
+
+`provider::InferenceExchange` owns a provider or protocol future and a bounded
+event channel. Unlike an explicit cancellable-result future, it retains observed
+checkpoints when the caller stops polling, without requiring cancellation to
+return through the transport result. There are no assembly tasks or background
+drainers. Dropping the exchange drops transport; dropping only `next()` leaves
+the exchange resumable. Call `cancel()` to drop transport and inspect retained
+output. Dropping the exchange itself cannot return a result.
+
+```rust,no_run
+use animist::provider::{ExchangeEvent, InferenceExchange, Model, RequestOptions};
+
+async fn example(model: &Model) -> animist::provider::Result<()> {
+    let mut exchange = InferenceExchange::new(|tx| async move {
+        model.provider.stream_message(
+            model, &[], "", &[], &tx, RequestOptions::default(),
+        ).await
+    });
+    while let Some(event) = exchange.next().await {
+        match event {
+            ExchangeEvent::Provider(event) => println!("{event:?}"),
+            ExchangeEvent::Finished(result) => { result?; break; }
+        }
+    }
+    let _partial = exchange.partial();
+    Ok(())
+}
+```
+
+`PartialResponse` separates display-only text/thinking from an ordered prefix of
+protocol-validated closed content blocks. Display deltas are never promoted into
+replay content. `ProviderEvent::ContentComplete` carries a closed block;
+`ProviderEvent::Usage` carries the latest cumulative usage for this attempt,
+not an additive increment. A connected event receiver must drain these events
+as well as deltas. Custom implementations can emit these checkpoints through the
+unchanged provider/protocol method signatures; without them, incomplete output
+has only display deltas and unknown usage.
+
+- Anthropic closes blocks at `content_block_stop`, after object-input and
+  nonempty-thinking-signature validation. A signature fragment alone does not
+  close thinking. Redacted data survives unchanged. Interleaved stops emit only
+  the contiguous closed prefix, preserving order.
+- Chat Completions closes content at its choice finish reason, not when tool
+  JSON first becomes parseable. Unsigned reasoning remains specific to a
+  `reasoning_content` replay-capable dialect. Usage-only chunks update usage
+  even if cancellation occurs before `[DONE]`.
+- Responses closes items at `response.output_item.done`, preserving output-index
+  order and the original opaque reasoning item. In-progress/incomplete items
+  block checkpointing across that gap. Terminal usage is reported before final output translation;
+  valid failure usage is retained without replacing the upstream failure when
+  its usage payload is malformed.
+
+These are replay **candidates**, not a complete inference request or permission
+to execute tools. They remain tied to the producing protocol/dialect. A caller
+choosing to persist them must explicitly close tool calls with truthful results,
+preserve opaque dependencies, and validate the resulting request. No partial
+content is automatically executed or committed by the agent.
+
+Each built-in SSE exchange accepts at most 16 MiB of total wire bytes, in
+addition to the existing event/framing limits. The exchange retains at most
+16 MiB across display strings and serialized closed blocks; if the budget is
+exceeded, `retention_limited` is set and no later blocks are retained across the
+gap. Usage remains available. Channels apply backpressure; retained output is
+not an unbounded event log. A checkpoint is observable only after the producer
+enqueues it; cancellation cannot recover unreported wire state or server usage.
+Errors retain their concrete protocol/provider variants and upstream payloads
+in `ExchangeEvent::Finished`, independently of the partial output.
+
+This adds provider event variants and changes `ProviderEvent` equality from
+`Eq` to `PartialEq` because usage includes an optional floating-point cost.
+Update exhaustive event matches; consumers rendering only deltas can ignore the
+two checkpoint variants. The existing `stream_message` and `assemble` calls
+remain usable without an exchange, but dropping those futures loses their state.
 
 ## Implementation sequence
 

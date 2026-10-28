@@ -45,6 +45,7 @@ pub trait Protocol: Send + Sync {
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request>;
 
     /// Emits incremental events; dropping this future cancels stream assembly.
+    /// Checkpoint closed content in order and cumulative usage when reported.
     async fn assemble(
         &self,
         response: Self::Response,
