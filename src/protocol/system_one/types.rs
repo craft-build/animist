@@ -203,10 +203,18 @@ impl Answer {
                 },
                 DecisionQuestion::Score { levels, .. },
             ) => {
+                ensure!(
+                    !levels.is_empty(),
+                    error::InvalidScoreSnafu {
+                        question: id,
+                        score: *score,
+                        levels: levels.len()
+                    }
+                );
                 #[expect(clippy::as_conversions, reason = "level count fits f64 exactly")]
                 let max_level = (levels.len() - 1) as f64;
                 ensure!(
-                    score.is_finite() && *score >= 0.0 && !levels.is_empty() && *score <= max_level,
+                    score.is_finite() && *score >= 0.0 && *score <= max_level,
                     error::InvalidScoreSnafu {
                         question: id,
                         score: *score,

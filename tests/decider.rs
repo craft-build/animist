@@ -209,6 +209,46 @@ fn provider(url: &str, authenticated: bool) -> DeciderProvider {
 }
 
 #[tokio::test]
+async fn direct_score_assembly_rejects_empty_levels_without_panicking() {
+    let body = json!({
+        "model": "fixture",
+        "answers": {
+            "score": {
+                "type": "score",
+                "score": 0.0,
+                "legend": {},
+                "probabilities": {},
+                "confidence": 0.9
+            }
+        }
+    });
+    let (url, task) = server("200 OK", &body.to_string()).await;
+    let response = reqwest::Client::new()
+        .post(url)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let request = DecisionRequest::builder()
+        .state(Value::Null)
+        .questions(BTreeMap::from([(
+            "score".into(),
+            DecisionQuestion::Score {
+                instructions: json!("score"),
+                levels: vec![],
+            },
+        )]))
+        .build();
+    assert!(matches!(
+        SystemOne.assemble(response, &request).await,
+        Err(ProtocolError::SystemOne {
+            source: SystemOneError::InvalidScore { question, levels: 0, .. }
+        }) if question == "score"
+    ));
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn llama_cpp_routes_typed_decisions_and_preserves_reported_results() {
     for authenticated in [false, true] {
         let (url, task) = server("200 OK", FIXTURE).await;

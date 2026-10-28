@@ -11,10 +11,15 @@ pub enum ProviderError {
     },
     #[snafu(display("Provider transport failed: {source}"))]
     Transport { source: reqwest::Error },
-    #[snafu(display("Provider returned HTTP {status}: {body}"))]
+    #[snafu(display(
+        "Provider returned HTTP {status}{suffix}: {body}",
+        suffix = if *body_truncated { " (body capped at 64 KiB; may be incomplete)" } else { "" }
+    ))]
     Http {
         status: u16,
         body: String,
+        /// The size limit shortened the body or stopped reading before completeness was known.
+        body_truncated: bool,
         backtrace: snafu::Backtrace,
     },
     #[snafu(transparent)]

@@ -2,6 +2,7 @@
 
 use arc_handle::arc_handle;
 use async_trait::async_trait;
+use snafu::ResultExt;
 
 pub mod anthropic;
 #[cfg(feature = "bedrock")]
@@ -47,15 +48,32 @@ pub type Result<T> = std::result::Result<T, ProviderError>;
 /// Cap on failed-response bodies buffered into errors, in bytes.
 pub(crate) const ERROR_BODY_LIMIT: usize = 64 * 1024;
 
-/// Truncates a failed-response body to `ERROR_BODY_LIMIT` bytes,
-/// backing off to the nearest char boundary.
-pub(crate) fn clamp_error_body(mut body: String) -> String {
+/// Buffers an `ERROR_BODY_LIMIT`-byte prefix, then drops the remaining body.
+/// Invalid UTF-8 is replaced and the rendered prefix stays within the same limit.
+/// The flag marks truncation or a limit reached without proving completeness.
+pub(crate) async fn read_error_body(mut response: reqwest::Response) -> Result<(String, bool)> {
+    let content_length = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok());
+    let mut bytes = Vec::with_capacity(ERROR_BODY_LIMIT);
+    let mut body_truncated = false;
+    while bytes.len() < ERROR_BODY_LIMIT {
+        let Some(chunk) = response.chunk().await.context(error::TransportSnafu)? else {
+            break;
+        };
+        let remaining = ERROR_BODY_LIMIT - bytes.len();
+        body_truncated |= chunk.len() > remaining;
+        bytes.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
+    }
+    body_truncated |= bytes.len() == ERROR_BODY_LIMIT && content_length != Some(bytes.len());
+    let mut body = String::from_utf8_lossy(&bytes).into_owned();
     let mut limit = ERROR_BODY_LIMIT.min(body.len());
     while !body.is_char_boundary(limit) {
         limit -= 1;
     }
+    body_truncated |= limit < body.len();
     body.truncate(limit);
-    body
+    Ok((body.into_boxed_str().into_string(), body_truncated))
 }
 
 /// Chat completion provider bound to a concrete transport and model policy.

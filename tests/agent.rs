@@ -780,6 +780,7 @@ async fn retries_are_bounded_and_reprepare_requests() {
                 Err(animist::provider::ProviderError::Http {
                     status: 503,
                     body: "busy".into(),
+                    body_truncated: false,
                     backtrace: std::backtrace::Backtrace::capture(),
                 }),
                 response(vec![text("done")], StopReason::EndTurn),
@@ -878,6 +879,7 @@ async fn finalization_attempts_every_layer_on_failure() {
             vec![Err(animist::provider::ProviderError::Http {
                 status: 500,
                 body: "failed".into(),
+                body_truncated: false,
                 backtrace: std::backtrace::Backtrace::capture(),
             })],
             false,
@@ -1673,11 +1675,13 @@ async fn retry_budget_exhaustion_preserves_provider_error() {
                 Err(animist::provider::ProviderError::Http {
                     status: 503,
                     body: "first".into(),
+                    body_truncated: false,
                     backtrace: std::backtrace::Backtrace::capture(),
                 }),
                 Err(animist::provider::ProviderError::Http {
                     status: 503,
                     body: "second".into(),
+                    body_truncated: false,
                     backtrace: std::backtrace::Backtrace::capture(),
                 }),
             ],
@@ -1701,6 +1705,7 @@ fn partial_attempt_model(hanging: bool, requests: Arc<Mutex<Vec<Vec<Message>>>>)
                     Err(animist::provider::ProviderError::Http {
                         status: 503,
                         body: "original failure".into(),
+                        body_truncated: false,
                         backtrace: std::backtrace::Backtrace::capture(),
                     }),
                     response(vec![text("recovered")], StopReason::EndTurn),

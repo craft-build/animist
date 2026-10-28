@@ -284,6 +284,7 @@ async fn cancelling_next_is_resumable_and_queued_checkpoints_precede_terminal_er
         Err(ProviderError::Http {
             status: 500,
             body: "intact".into(),
+            body_truncated: false,
             backtrace: std::backtrace::Backtrace::capture(),
         })
     });
@@ -334,6 +335,7 @@ async fn retention_limits_never_skip_a_block_and_then_retain_later_content() {
         Err(ProviderError::Http {
             status: 500,
             body: String::new(),
+            body_truncated: false,
             backtrace: std::backtrace::Backtrace::capture(),
         })
     });

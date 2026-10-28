@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 use super::{
     Config, Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse,
     Features, Message, Model, ModelInfo, Pricing, ProviderEvent, ProviderImpl, RequestOptions,
-    Result, StreamResponse, Thinking, ThinkingConfig, ThinkingSupport, Tier, Tool,
-    clamp_error_body, error,
+    Result, StreamResponse, Thinking, ThinkingConfig, ThinkingSupport, Tier, Tool, error,
+    read_error_body,
 };
 use crate::{
     catalog::CatalogModel,
@@ -132,8 +132,13 @@ impl Synthetic {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
-            return error::HttpSnafu { status, body }.fail();
+            let (body, body_truncated) = read_error_body(response).await?;
+            return error::HttpSnafu {
+                status,
+                body,
+                body_truncated,
+            }
+            .fail();
         }
         Ok(response)
     }

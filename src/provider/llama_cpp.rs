@@ -13,7 +13,7 @@ use super::{
     DeciderModel, DeciderProviderImpl, DecisionRequest, DecisionResponse, Effort, EmbeddingModel,
     EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message, Model, ModelInfo,
     ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse, ThinkingConfig,
-    ThinkingSupport, Tool, clamp_error_body, error,
+    ThinkingSupport, Tool, error, read_error_body,
 };
 use crate::protocol::{
     DeciderProtocol, EmbeddingProtocol, Protocol, ProtocolInput,
@@ -127,8 +127,13 @@ impl LlamaCpp {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
-            return error::HttpSnafu { status, body }.fail();
+            let (body, body_truncated) = read_error_body(response).await?;
+            return error::HttpSnafu {
+                status,
+                body,
+                body_truncated,
+            }
+            .fail();
         }
         Ok(response)
     }
