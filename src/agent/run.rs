@@ -221,6 +221,8 @@ pub struct RunContext {
     pub stats: Arc<RunStats>,
     pub(crate) events: Option<Sender<AgentEvent>>,
     pub(crate) stopped: Mutex<Option<String>>,
+    pub(crate) tool_halt: Cancellation,
+    pub(crate) tool_dispatches: AtomicU64,
     pub(crate) tool_failures: Mutex<Vec<ToolFailure>>,
     pub(crate) interrupted_attempts: Mutex<Vec<Arc<InterruptedAttempt>>>,
 }

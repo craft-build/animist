@@ -23,12 +23,13 @@ use crate::{
 };
 use async_trait::async_trait;
 use bon::Builder;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use std::{
     collections::BTreeSet,
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::{Mutex, OnceCell};
-use tool::{ToolCall, ToolContext, ToolOutput, ToolRegistry};
+use tool::{ToolCall, ToolContext, ToolOutput, ToolRegistry, ToolScheduling, ToolSchedulingPolicy};
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 
@@ -44,6 +45,7 @@ pub struct Agent {
     config: AgentConfig,
     #[builder(default)]
     tools: ToolRegistry,
+    tool_scheduling_policy: Option<ToolSchedulingPolicy>,
     layers: Option<AgentLayer>,
     #[builder(skip)]
     gate: Mutex<bool>,
@@ -90,7 +92,12 @@ impl Agent {
         if *closed {
             return Err(AgentError::ShutDown);
         }
-        if self.config.max_steps == 0 || self.config.max_tool_depth == 0 {
+        if self.config.max_steps == 0
+            || self.config.max_tool_depth == 0
+            || self.config.max_concurrent_tools == 0
+            || self.config.max_tool_calls == 0
+            || self.config.max_child_calls == 0
+        {
             return Err(AgentError::InvalidLimits);
         }
         let run = RunContext {
@@ -99,6 +106,8 @@ impl Agent {
             stats: Default::default(),
             events: options.events,
             stopped: Mutex::new(None),
+            tool_halt: Default::default(),
+            tool_dispatches: Default::default(),
             tool_failures: Mutex::new(Vec::new()),
             interrupted_attempts: Mutex::new(Vec::new()),
         };
@@ -195,7 +204,7 @@ impl Agent {
         let mut last_response = None;
         let mut retries = 0;
         for step in 0..self.config.max_steps {
-            let (response, expected) = loop {
+            let (response, expected, visible) = loop {
                 let messages = self.history.current().await;
                 let definitions = self.tools.definitions();
                 crate::protocol::validate_replay(&messages, &definitions)?;
@@ -215,18 +224,10 @@ impl Agent {
                     None => request,
                 };
                 crate::protocol::validate_replay(&request.messages, &request.tools)?;
-                if request.tools.len() != definitions.len()
-                    || request.tools.iter().zip(&definitions).any(|(a, b)| {
-                        a.name != b.name
-                            || a.description != b.description
-                            || a.input_schema != b.input_schema
-                    })
-                {
-                    return Err(AgentError::ToolDeclarationsChanged);
-                }
+                validate_tool_subset(&request.tools, &definitions)?;
                 let expected = self.history.snapshot().await;
                 match self.stream(run, step.into(), &request).await {
-                    Ok(response) => break (response, expected),
+                    Ok(response) => break (response, expected, request.tools),
                     Err(error @ AgentError::Inference { .. })
                         if retries < self.config.max_retries =>
                     {
@@ -336,65 +337,109 @@ impl Agent {
                 })
                 .await?;
             let mut failure = None;
-            for (index, call) in calls.iter().enumerate() {
-                let expected = self.history.snapshot().await;
-                if expected
-                    .entries()
-                    .get(result_index)
-                    .and_then(HistoryEntry::current)
+            let mut cursor = 0;
+            while cursor < calls.len() {
+                let mut expected = self.history.snapshot().await.entries().to_vec();
+                if expected.get(result_index).and_then(HistoryEntry::current)
                     != Some(&result_message)
                 {
                     return Err(AgentError::HistoryChanged {
                         messages: vec![result_message],
                     });
                 }
-                let output = if matches!(
-                    response.stop_reason,
-                    Some(
-                        StopReason::MaxTokens
-                            | StopReason::PauseTurn
-                            | StopReason::Refusal
-                            | StopReason::ContextWindowExceeded
-                    )
-                ) {
-                    ToolOutput::builder()
-                        .content("Not executed because generation did not finish")
-                        .is_error(true)
-                        .build()
-                } else if failure.is_some() {
-                    ToolOutput::builder()
-                        .content("Not executed because the run stopped")
-                        .is_error(true)
-                        .build()
-                } else {
-                    match self.execute_tool(run, call, None, 0).await {
+                let start = cursor;
+                let mut claims = Vec::new();
+                while cursor < calls.len() && claims.len() < self.config.max_concurrent_tools {
+                    let call = &calls[cursor];
+                    let declared = self
+                        .tools
+                        .get(&call.name)
+                        .map(|tool| tool.scheduling(&call.input))
+                        .unwrap_or_default();
+                    let claim = match &self.tool_scheduling_policy {
+                        Some(policy) => policy.scheduling(call, declared),
+                        None => declared,
+                    };
+                    if claims.iter().any(|previous| claim.conflicts(previous)) {
+                        break;
+                    }
+                    claims.push(claim);
+                    cursor += 1;
+                }
+                let skipped = failure.is_some();
+                let mut running: FuturesUnordered<_> = calls[start..cursor]
+                    .iter()
+                    .zip(claims)
+                    .enumerate()
+                    .map(|(offset, (call, claim))| {
+                        let visible = &visible;
+                        let stop_reason = &response.stop_reason;
+                        async move {
+                            let output = if skipped {
+                                Ok(ToolOutput::builder()
+                                    .content("Not executed because the run stopped")
+                                    .is_error(true)
+                                    .build())
+                            } else if matches!(
+                                stop_reason,
+                                Some(
+                                    StopReason::MaxTokens
+                                        | StopReason::PauseTurn
+                                        | StopReason::Refusal
+                                        | StopReason::ContextWindowExceeded
+                                )
+                            ) {
+                                Ok(ToolOutput::builder()
+                                    .content("Not executed because generation did not finish")
+                                    .is_error(true)
+                                    .build())
+                            } else {
+                                self.execute_tool(run, call, None, 0, visible, claim).await
+                            };
+                            (start + offset, output)
+                        }
+                    })
+                    .collect();
+                while let Some((index, output)) = running.next().await {
+                    let call = &calls[index];
+                    let output = match output {
                         Ok(output) => output,
                         Err(error) => {
                             let output = ToolOutput::builder()
                                 .content(error.to_string())
                                 .is_error(true)
                                 .build();
-                            failure = Some(error);
+                            if failure.is_none() {
+                                failure = Some(error);
+                                run.tool_halt.cancel();
+                            }
                             output
                         }
-                    }
-                };
-                results[index] = ContentBlock::ToolResult {
-                    tool_use_id: call.id.clone(),
-                    content: output.content,
-                    is_error: output.is_error,
-                    loaded_tools: output.loaded_tools,
-                };
-                result_message.message_mut().content = results.clone();
-                self.history
-                    .compact(ExchangeCommit {
-                        expected: expected.entries().to_vec(),
-                        edits: vec![CompactionEdit::Replace {
-                            index: result_index,
-                            message: result_message.clone(),
-                        }],
-                    })
-                    .await?;
+                    };
+                    results[index] = ContentBlock::ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: output.content,
+                        is_error: output.is_error,
+                        loaded_tools: output.loaded_tools,
+                    };
+                    result_message.message_mut().content = results.clone();
+                    self.history
+                        .compact(ExchangeCommit {
+                            expected: expected.clone(),
+                            edits: vec![CompactionEdit::Replace {
+                                index: result_index,
+                                message: result_message.clone(),
+                            }],
+                        })
+                        .await?;
+                    let entry = &expected[result_index];
+                    let mut revisions = entry.revisions().to_vec();
+                    revisions.push(result_message.clone());
+                    expected[result_index] = HistoryEntry::builder()
+                        .source(entry.verbatim().clone())
+                        .revisions(revisions)
+                        .build();
+                }
             }
             run.emit(AgentEvent::StepFinished {
                 message: response.message,
@@ -524,6 +569,30 @@ impl Agent {
         call: &ToolCall,
         parent_call_id: Option<&str>,
         depth: u32,
+        visible: &[crate::provider::Tool],
+        scheduling: ToolScheduling,
+    ) -> Result<ToolOutput> {
+        tokio::select! {
+            biased;
+            _ = run.cancellation.cancelled() => Err(AgentError::Cancelled),
+            _ = run.tool_halt.cancelled() => {
+                match run.stopped.lock().await.clone() {
+                    Some(reason) => Err(AgentError::Stopped { reason }),
+                    None => Err(AgentError::Cancelled),
+                }
+            }
+            result = self.execute_tool_inner(run, call, parent_call_id, depth, visible, scheduling) => result,
+        }
+    }
+
+    async fn execute_tool_inner(
+        &self,
+        run: &RunContext,
+        call: &ToolCall,
+        parent_call_id: Option<&str>,
+        depth: u32,
+        visible: &[crate::provider::Tool],
+        scheduling: ToolScheduling,
     ) -> Result<ToolOutput> {
         if depth >= self.config.max_tool_depth {
             return Err(AgentError::ToolDepthExceeded);
@@ -534,12 +603,27 @@ impl Agent {
         if let Some(reason) = run.stopped.lock().await.clone() {
             return Err(AgentError::Stopped { reason });
         }
+        if run
+            .tool_dispatches
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count
+                    .checked_add(1)
+                    .filter(|next| *next <= self.config.max_tool_calls)
+            })
+            .is_err()
+        {
+            return Err(AgentError::ToolCallLimitExceeded);
+        }
         let context = ToolContext {
             run,
             call,
             parent_call_id,
             agent: self,
             depth,
+            visible,
+            scheduling,
+            children: Default::default(),
+            child_gate: Default::default(),
         };
         let decision = match &self.layers {
             Some(layers) => tokio::select! {
@@ -552,12 +636,17 @@ impl Agent {
         let output = match decision {
             ToolDecision::Stop { reason } => {
                 *run.stopped.lock().await = Some(reason.clone());
+                run.tool_halt.cancel();
                 return Err(AgentError::Stopped { reason });
             }
             ToolDecision::Deny { reason } => {
                 ToolOutput::builder().content(reason).is_error(true).build()
             }
-            ToolDecision::Run => match self.tools.get(&call.name) {
+            ToolDecision::Run => match self
+                .tools
+                .get(&call.name)
+                .filter(|_| visible.iter().any(|tool| tool.name == call.name))
+            {
                 None => ToolOutput::builder()
                     .content(format!("Unknown tool: {}", call.name))
                     .is_error(true)
@@ -572,7 +661,15 @@ impl Agent {
                     let result = tokio::select! {
                         biased;
                         _ = run.cancellation.cancelled() => return Err(AgentError::Cancelled),
-                        result = tool.execute(&context, call.input.clone()) => result,
+                        result = async {
+                            match self.config.tool_timeout_ms {
+                                Some(ms) => tokio::time::timeout(
+                                    std::time::Duration::from_millis(ms),
+                                    tool.execute(&context, call.input.clone())
+                                ).await.map_err(|_| AgentError::ToolTimeout { name: call.name.clone() }),
+                                None => Ok(tool.execute(&context, call.input.clone()).await),
+                            }
+                        } => result?,
                     };
                     match result {
                         Ok(output) => output,
@@ -615,6 +712,25 @@ impl Agent {
         .await;
         Ok(output)
     }
+}
+
+fn validate_tool_subset(
+    tools: &[crate::provider::Tool],
+    available: &[crate::provider::Tool],
+) -> Result<()> {
+    let mut names = BTreeSet::new();
+    for tool in tools {
+        if !names.insert(&tool.name)
+            || !available.iter().any(|original| {
+                original.name == tool.name
+                    && original.description == tool.description
+                    && original.input_schema == tool.input_schema
+            })
+        {
+            return Err(AgentError::ToolDeclarationsChanged);
+        }
+    }
+    Ok(())
 }
 
 struct ExchangeCommit {

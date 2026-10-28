@@ -945,7 +945,517 @@ async fn child_tools_cannot_bypass_authorization() {
     );
 }
 
+struct ScheduledTool {
+    active: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+    finished: Arc<Mutex<Vec<u64>>>,
+    claims: animist::agent::tool::ToolScheduling,
+}
+
+struct ActiveTool(Arc<AtomicUsize>);
+
+impl Drop for ActiveTool {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl ToolImpl for ScheduledTool {
+    type Args = u64;
+    type Output = String;
+    type Error = Infallible;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::builder()
+            .name("scheduled")
+            .description("Test scheduling")
+            .input_schema(json!({"type":"integer"}))
+            .build()
+    }
+
+    fn scheduling(&self, _: &serde_json::Value) -> animist::agent::tool::ToolScheduling {
+        self.claims.clone()
+    }
+
+    async fn call(&self, context: &ToolContext<'_>, delay: u64) -> Result<String, Infallible> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        let _guard = ActiveTool(self.active.clone());
+        self.peak.fetch_max(active, Ordering::SeqCst);
+        context.progress("entered").await;
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        self.finished.lock().await.push(delay);
+        Ok(delay.to_string())
+    }
+}
+
+#[tokio::test]
+async fn scheduling_bounds_conflicts_and_preserves_model_order() {
+    use animist::agent::tool::ToolScheduling;
+    for (claims, limit, expected_peak) in [
+        (ToolScheduling::default(), 3_usize, 1),
+        (
+            ToolScheduling::Resources {
+                reads: vec![],
+                writes: vec!["file".into()],
+            },
+            3,
+            1,
+        ),
+        (
+            ToolScheduling::Resources {
+                reads: vec!["file".into()],
+                writes: vec![],
+            },
+            2,
+            2,
+        ),
+        (
+            ToolScheduling::Resources {
+                reads: vec![],
+                writes: vec![],
+            },
+            1,
+            1,
+        ),
+    ] {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(Mutex::new(Vec::new()));
+        let mut tools = ToolRegistry::default();
+        tools
+            .register(ScheduledTool {
+                active: active.clone(),
+                peak: peak.clone(),
+                finished: finished.clone(),
+                claims,
+            })
+            .unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        vec![
+                            call("1", "scheduled", json!(30)),
+                            call("2", "scheduled", json!(1)),
+                            call("3", "scheduled", json!(2)),
+                        ],
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Default::default(),
+            ))
+            .tools(tools)
+            .config(AgentConfig::builder().max_concurrent_tools(limit).build())
+            .build();
+        agent.run(input(), RunOptions::default()).await.unwrap();
+        assert_eq!(peak.load(Ordering::SeqCst), expected_peak);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        if expected_peak == 2 {
+            assert_eq!(finished.lock().await[0], 1);
+        }
+        let history = agent.history().current().await;
+        for (index, block) in history[2].content.iter().enumerate() {
+            assert!(matches!(block, ContentBlock::ToolResult { tool_use_id, .. }
+                if tool_use_id == &(index + 1).to_string()));
+        }
+        animist::protocol::validate_replay(&history, &[]).unwrap();
+    }
+}
+
+struct HideEcho;
+
+struct EditDuringTool;
+
+#[async_trait]
+impl LayerImpl for EditDuringTool {
+    async fn post_tool_exec(
+        &self,
+        agent: &Agent,
+        _: &ToolContext<'_>,
+        output: ToolOutput,
+    ) -> animist::agent::Result<ToolOutput> {
+        agent.history().add_stored(input()).await;
+        Ok(output)
+    }
+}
+
+#[tokio::test]
+async fn tool_result_commits_reject_edits_during_execution() {
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(Default::default())).unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(
+                vec![
+                    call("1", "echo", json!({"text":"first"})),
+                    call("2", "echo", json!({"text":"second"})),
+                ],
+                StopReason::ToolUse,
+            )],
+            false,
+            Default::default(),
+        ))
+        .tools(tools)
+        .tool_scheduling_policy(animist::agent::tool::ToolSchedulingPolicy::new(
+            IndependentPolicy,
+        ))
+        .config(AgentConfig::builder().max_concurrent_tools(2_usize).build())
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(EditDuringTool))
+                .build(),
+        )
+        .build();
+    assert!(matches!(
+        agent.run(input(), RunOptions::default()).await,
+        Err(AgentError::History { .. })
+    ));
+    let history = agent.history().current().await;
+    assert!(history.len() > 3);
+    assert!(
+        history[2]
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
+    );
+    animist::protocol::validate_replay(&history, &[]).unwrap();
+}
+
+#[async_trait]
+impl LayerImpl for HideEcho {
+    async fn prepare_request(
+        &self,
+        _: &Agent,
+        _: &RunContext,
+        mut request: StepRequest,
+    ) -> animist::agent::Result<StepRequest> {
+        request.tools.retain(|tool| tool.name != "echo");
+        Ok(request)
+    }
+}
+
+#[tokio::test]
+async fn hidden_tools_are_unavailable_to_model_and_child_calls() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools.register(Child).unwrap();
+    tools.register(Echo(count.clone())).unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![
+                        call("parent", "child", json!({})),
+                        call("direct", "echo", json!({"text":"hidden"})),
+                    ],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Default::default(),
+        ))
+        .tools(tools)
+        .layers(AgentLayer::builder().layer(Layer::new(HideEcho)).build())
+        .build();
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.run(input(), RunOptions::default()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(report.stats.tool_calls, 1);
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+    let history = agent.history().current().await;
+    assert!(
+        history[2]
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
+    );
+    animist::protocol::validate_replay(&history, &[]).unwrap();
+}
+
+#[tokio::test]
+async fn nested_dispatch_shares_the_run_budget_without_permit_deadlock() {
+    for budget in [1_u64, 2] {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::default();
+        tools.register(Child).unwrap();
+        tools.register(Echo(count.clone())).unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        vec![call("parent", "child", json!({}))],
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Default::default(),
+            ))
+            .tools(tools)
+            .config(AgentConfig::builder().max_tool_calls(budget).build())
+            .build();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            agent.run(input(), RunOptions::default()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), (budget - 1) as usize);
+        if budget == 1 {
+            assert!(
+                matches!(&*report.tool_failures[0].error, ToolError::Execution { source }
+                if matches!(source.downcast_ref::<AgentError>(), Some(AgentError::ToolCallLimitExceeded)))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn parallel_cancellation_and_drop_leave_no_tasks_or_orphan_results() {
+    for cancel in [false, true] {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::default();
+        tools
+            .register(ScheduledTool {
+                active: active.clone(),
+                peak: Default::default(),
+                finished: Default::default(),
+                claims: animist::agent::tool::ToolScheduling::Resources {
+                    reads: vec![],
+                    writes: vec![],
+                },
+            })
+            .unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![response(
+                    vec![
+                        call("1", "scheduled", json!(60_000)),
+                        call("2", "scheduled", json!(60_000)),
+                    ],
+                    StopReason::ToolUse,
+                )],
+                false,
+                Default::default(),
+            ))
+            .tools(tools)
+            .config(AgentConfig::builder().max_concurrent_tools(2_usize).build())
+            .build();
+        let cancellation = Cancellation::default();
+        let (tx, rx) = flume::unbounded();
+        let mut running = Box::pin(
+            agent.run(
+                input(),
+                RunOptions::builder()
+                    .cancellation(cancellation.clone())
+                    .events(tx)
+                    .build(),
+            ),
+        );
+        let mut entered = 0;
+        while entered < 2 {
+            tokio::select! {
+                result = &mut running => panic!("unexpected result: {result:?}"),
+                event = rx.recv_async() => if matches!(event.unwrap(), AgentEvent::ToolProgress { .. }) {
+                    entered += 1;
+                }
+            }
+        }
+        if cancel {
+            cancellation.cancel();
+            assert_eq!(running.await.unwrap().status, RunStatus::Cancelled);
+        } else {
+            drop(running);
+        }
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        let history = agent.history().current().await;
+        assert_eq!(history[2].content.len(), 2);
+        animist::protocol::validate_replay(&history, &[]).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn tool_timeout_is_not_retried_and_preserves_pending_results() {
+    let mut tools = ToolRegistry::default();
+    tools.register(HangTool).unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(
+                vec![call("1", "hang", json!({})), call("2", "hang", json!({}))],
+                StopReason::ToolUse,
+            )],
+            false,
+            Default::default(),
+        ))
+        .tools(tools)
+        .config(
+            AgentConfig::builder()
+                .tool_timeout_ms(1_u64)
+                .max_retries(3_u32)
+                .build(),
+        )
+        .build();
+    assert!(matches!(
+        agent.run(input(), RunOptions::default()).await,
+        Err(AgentError::ToolTimeout { .. })
+    ));
+    animist::protocol::validate_replay(&agent.history().current().await, &[]).unwrap();
+}
+
 struct HangTool;
+
+struct StopSecond;
+
+#[async_trait]
+impl LayerImpl for StopSecond {
+    async fn pre_tool_exec(
+        &self,
+        _: &Agent,
+        context: &ToolContext<'_>,
+    ) -> animist::agent::Result<animist::agent::ToolDecision> {
+        Ok(if context.call.id == "2" {
+            animist::agent::ToolDecision::Stop {
+                reason: "stop siblings".into(),
+            }
+        } else {
+            animist::agent::ToolDecision::Run
+        })
+    }
+}
+
+struct IndependentPolicy;
+
+impl animist::agent::tool::ToolSchedulingPolicyImpl for IndependentPolicy {
+    fn scheduling(
+        &self,
+        _: &ToolCall,
+        _: animist::agent::tool::ToolScheduling,
+    ) -> animist::agent::tool::ToolScheduling {
+        animist::agent::tool::ToolScheduling::Resources {
+            reads: vec![],
+            writes: vec![],
+        }
+    }
+}
+
+#[tokio::test]
+async fn stop_drops_parallel_siblings_and_does_not_start_later_waves() {
+    let active = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools
+        .register(ScheduledTool {
+            active: active.clone(),
+            peak: Default::default(),
+            finished: Default::default(),
+            claims: Default::default(),
+        })
+        .unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(
+                vec![
+                    call("1", "scheduled", json!(60_000)),
+                    call("2", "scheduled", json!(60_000)),
+                    call("3", "scheduled", json!(60_000)),
+                ],
+                StopReason::ToolUse,
+            )],
+            false,
+            Default::default(),
+        ))
+        .tools(tools)
+        .config(AgentConfig::builder().max_concurrent_tools(2_usize).build())
+        .tool_scheduling_policy(animist::agent::tool::ToolSchedulingPolicy::new(
+            IndependentPolicy,
+        ))
+        .layers(AgentLayer::builder().layer(Layer::new(StopSecond)).build())
+        .build();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        agent.run(input(), RunOptions::default()),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result, Err(AgentError::Stopped { .. })));
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    animist::protocol::validate_replay(&agent.history().current().await, &[]).unwrap();
+}
+
+struct FanOut;
+
+#[async_trait]
+impl ToolImpl for FanOut {
+    type Args = serde_json::Value;
+    type Output = String;
+    type Error = AgentError;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::builder()
+            .name("fanout")
+            .description("Dispatch two children")
+            .input_schema(json!({"type":"object"}))
+            .build()
+    }
+
+    async fn call(&self, context: &ToolContext<'_>, _: Self::Args) -> Result<String, AgentError> {
+        let child = ToolCall::builder()
+            .id("nested")
+            .name("echo")
+            .input(json!({"text":"nested"}))
+            .build();
+        let (first, second) =
+            tokio::join!(context.dispatch(child.clone()), context.dispatch(child));
+        first?;
+        second?;
+        Ok("done".into())
+    }
+}
+
+#[tokio::test]
+async fn child_fanout_is_bounded_and_nonexclusive_parents_cannot_dispatch() {
+    for nonexclusive in [false, true] {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::default();
+        tools.register(FanOut).unwrap();
+        tools.register(Echo(count.clone())).unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        vec![call("parent", "fanout", json!({}))],
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Default::default(),
+            ))
+            .tools(tools)
+            .config(AgentConfig::builder().max_child_calls(1_u64).build())
+            .maybe_tool_scheduling_policy(
+                nonexclusive
+                    .then(|| animist::agent::tool::ToolSchedulingPolicy::new(IndependentPolicy)),
+            )
+            .build();
+        let report = agent.run(input(), RunOptions::default()).await.unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), usize::from(!nonexclusive));
+        assert!(
+            matches!(&*report.tool_failures[0].error, ToolError::Execution { source }
+            if matches!((nonexclusive, source.downcast_ref::<AgentError>()),
+                (true, Some(AgentError::ChildDispatchRequiresExclusive)) |
+                (false, Some(AgentError::ChildCallLimitExceeded))))
+        );
+    }
+}
 
 #[async_trait]
 impl ToolImpl for HangTool {

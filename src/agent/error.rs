@@ -32,6 +32,14 @@ pub enum AgentError {
     DuplicateTool { name: String },
     #[snafu(display("Tool nesting limit exceeded"))]
     ToolDepthExceeded,
+    #[snafu(display("Run tool call limit exceeded"))]
+    ToolCallLimitExceeded,
+    #[snafu(display("Child tool call limit exceeded"))]
+    ChildCallLimitExceeded,
+    #[snafu(display("Only exclusive tools may dispatch children"))]
+    ChildDispatchRequiresExclusive,
+    #[snafu(display("Tool {name} timed out; external effects may have occurred"))]
+    ToolTimeout { name: String },
     #[snafu(display("Run cancelled"))]
     Cancelled,
     #[snafu(display("Layer stopped the run: {reason}"))]
@@ -44,7 +52,7 @@ pub enum AgentError {
     },
     #[snafu(display("Model returned duplicate or empty tool call ID {id}"))]
     InvalidToolCallId { id: String },
-    #[snafu(display("A layer changed tool declarations without changing the registry"))]
+    #[snafu(display("A layer added or modified a tool declaration"))]
     ToolDeclarationsChanged,
     #[snafu(display(
         "History changed during the model step or tool execution; uncommitted messages are retained in the error"

@@ -1,5 +1,7 @@
 # Add bounded conflict-aware tool scheduling
 
+Implemented; see `docs/agents.md` for the scheduling and nested-dispatch contract.
+
 Implement within Animist. Current execution is sequential and pending results are
 persisted before execution. Preserve that default and the Layer/AgentLayer list.
 Craft's dispatcher is a reference for conflict-aware waves, not code to transplant.

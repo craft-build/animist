@@ -144,7 +144,9 @@ impl LayerImpl for AgentLayer {
         run: &RunContext,
         request: StepRequest,
     ) -> Result<StepRequest> {
+        let available = request.tools.clone();
         let request = self.layer.prepare_request(agent, run, request).await?;
+        super::validate_tool_subset(&request.tools, &available)?;
         match &self.next {
             Some(next) => next.prepare_request(agent, run, request).await,
             None => Ok(request),

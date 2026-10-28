@@ -30,6 +30,7 @@ base64 = "0.23"
 bon = "3"
 bytes = { version = "1", optional = true }
 flume = "0.12"
+futures-util = "0.3"
 http = { version = "1", optional = true }
 jiff = { version = "0.2", features = ["serde"] }
 macro_rules_attribute = "0.2"

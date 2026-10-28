@@ -71,8 +71,9 @@ attempt every node even when an earlier node fails. The first cleanup error is
 returned; if both the run and its completion fail, both errors are retained.
 
 Request transformations do not rewrite stored history. Use them for volatile
-context, budgeted request views, and selecting a fallback model. Tool declarations
-must still match the frozen registry. Response transformations intentionally affect
+context, budgeted request views, and selecting a fallback model. Layers may remove
+tool declarations, but cannot add, modify, or restore declarations removed by a
+preceding layer. Response transformations intentionally affect
 replayed content; preserve opaque reasoning/signatures required by the protocol.
 Raw provider deltas are not retrospectively transformed.
 
@@ -88,7 +89,7 @@ messages need not alternate roles. Request-only trimming must retain complete
 tool exchanges or remove them together; a missing result is not silently repaired.
 An interrupted execution's explicit error result is structurally complete.
 Historical tool names need not be currently registered or advertised.
-Tool declaration equality with the frozen registry remains a separate execution
+Tool declaration membership in the frozen registry remains a separate execution
 constraint. See the shared replay rules in `docs/providers-and-protocols.md`.
 
 ## Typed tools
@@ -118,8 +119,52 @@ error results the model can correct. `ToolFailed` and `RunReport::tool_failures`
 retain original structured errors behind `Arc`s, even without an event observer;
 only the model-facing result renders them as text. Layer
 errors and explicit stop decisions terminate the run. Tool implementations are
-never retried automatically. Execution is sequential by default and currently the
-only scheduling mode; conflict-aware parallel execution is a follow-up.
+never retried automatically. Execution is sequential by default.
+
+### Bounded scheduling
+
+Set `AgentConfig::max_concurrent_tools` above its default of `1` to opt into
+parallel execution. Override `ToolImpl::scheduling` (or `ToolExecutorImpl` for
+erased tools) to return `ToolScheduling::Resources { reads, writes }`. Empty
+resource lists explicitly claim independence. The default, `Exclusive`, conflicts
+with every other call. Shared reads may overlap; any matching write conflicts.
+Resource keys are opaque: applications own path normalization and alias handling.
+
+Alternatively, supply an application-owned `ToolSchedulingPolicy` through
+`Agent::builder().tool_scheduling_policy(...)`. Its synchronous `scheduling`
+method receives the call and the tool's declaration and returns the effective
+claim. Policy implementations must conservatively leave unknown behavior
+exclusive. Claims cover the entire authorization/execution/result-hook pipeline.
+
+The scheduler forms bounded, contiguous conflict-free waves in model order.
+A conflicting call is a barrier; later independent calls do not overtake it.
+It polls owned futures without spawning detached tasks. Events and revisions may
+arrive in completion order, but model-facing result slots remain in call order.
+Layers must be concurrency-safe when parallel execution is enabled.
+
+Only exclusive contexts may dispatch children. Their child tree inherits the
+parent's exclusive reservation, without acquiring another root slot. Each parent
+serializes its children, including their descendants; sibling dispatch attempts
+are capped by `max_child_calls` (default `32`, counting all attempts). Nesting is
+capped by `max_tool_depth` (default `8`). This conservative contract avoids
+parent/child permit deadlocks and cross-tree resource conflicts. Resource-claimed
+tools must not dispatch children; use an exclusive orchestration tool instead.
+
+`max_tool_calls` (default `1024`) caps admitted calls across the whole run,
+including nested, denied, unknown, and hidden calls. Budget/depth errors returned
+by child dispatch remain typed errors for the parent to handle. The final
+advertised declaration set of each inference attempt also gates every model and
+child call for that step. Registration alone does not grant visibility.
+
+`tool_timeout_ms` defaults to no timeout and covers the executor future, including
+time it spends dispatching children, but not its outer authorization/result hooks.
+Timeouts terminate the run with `ToolTimeout`; cancellation, stop, or a fatal
+pipeline error drops sibling futures and prevents later waves from executing.
+Denial only affects the denied call. Completed results are retained; unfinished
+calls have explicit error results. Neither timeout nor cancellation guarantees
+that external effects stopped or were rolled back, and neither retries a tool.
+Detached work inside tools is outside this guarantee and must not be used.
+Workspace modes, snapshots, permissions UI, and path policy remain in consumers.
 
 Tool output uses `ToolContents`, an ordered collection of `ToolContent::Text`
 and `ToolContent::Image { source: ImageSource }`. Conversation blocks such as
@@ -246,7 +291,7 @@ charged locally.
 
 ## Follow-ups
 
-See `followup/` for executable task prompts covering sampling,
-scheduling, and application-boundary audits.
+See `followup/` for executable task prompts covering sampling
+and application-boundary audits.
 Craft and Revelry migrations and additional provider integrations are outside
 this workstream.
