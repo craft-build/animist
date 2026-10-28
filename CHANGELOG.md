@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/craft-build/animist/compare/v0.4.0...v0.5.0) - 2026-10-28
+
+### Added
+
+- *(provider)* [**breaking**] add shared sampling controls
+- *(agent)* [**breaking**] add bounded conflict-aware tool scheduling
+- *(inference)* [**breaking**] retain cancellation-safe partial responses
+- *(protocol)* validate prepared conversation replay
+- *(tools)* [**breaking**] preserve rich tool results across execution and replay
+
+### Fixed
+
+- [**breaking**] bound HTTP error reads and guard empty score levels
+
+### Other
+
+- *(github)* fix changelog for release-plz
+- *(deps)* update dependencies
+- [**breaking**] apply whole-crate rust review findings
+
 ## [0.4.0](https://github.com/craft-build/animist/compare/v0.3.0...v0.4.0) - 2026-10-27
 
 ### Added
