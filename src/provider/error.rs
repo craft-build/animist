@@ -64,6 +64,27 @@ pub enum ProviderError {
     FastModeUnsupported { provider: String },
     #[snafu(display("Maximum output token limit must be positive"))]
     ZeroOutputTokenLimit,
+    #[snafu(display("Provider {provider} does not support explicit {control}"))]
+    UnsupportedSamplingControl {
+        provider: String,
+        control: &'static str,
+    },
+    #[snafu(display(
+        "Provider {provider}: {control} must be finite and in [{min}, {max}], got {value}"
+    ))]
+    SamplingOutOfRange {
+        provider: String,
+        control: &'static str,
+        value: f64,
+        min: f64,
+        max: f64,
+    },
+    #[snafu(display("Provider {provider} supports at most {max} stop sequences, got {count}"))]
+    TooManyStopSequences {
+        provider: String,
+        count: usize,
+        max: usize,
+    },
     #[snafu(display("Provider {provider} does not support requesting embedding dimensions"))]
     EmbeddingDimensionsUnsupported { provider: String },
     #[snafu(display("llama.cpp thinking budget {budget} exceeds its signed 32-bit range"))]

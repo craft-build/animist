@@ -25,6 +25,23 @@ impl Protocol for Responses {
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
         crate::protocol::validate_replay(input.messages, input.tools)?;
+        for (control, explicit) in [
+            (
+                "frequency_penalty",
+                input.options.frequency_penalty.is_some(),
+            ),
+            ("presence_penalty", input.options.presence_penalty.is_some()),
+            ("stop_sequences", input.options.stop_sequences.is_some()),
+        ] {
+            ensure!(
+                !explicit,
+                crate::protocol::sampling::UnsupportedSnafu {
+                    boundary: "responses",
+                    control,
+                }
+            );
+        }
+        crate::protocol::sampling::validate(input.options, "responses", 2.0, 0.0, 0)?;
         let mut items = Vec::new();
         for message in input.messages {
             let mut parts = Vec::new();
@@ -144,6 +161,8 @@ impl Protocol for Responses {
             .stream(true)
             .store(false)
             .include(vec![ResponseInclude::EncryptedReasoning])
+            .maybe_temperature(input.options.temperature)
+            .maybe_top_p(input.options.top_p)
             .maybe_instructions((!input.system.is_empty()).then_some(input.system))
             .tools(tools)
             .maybe_max_output_tokens(

@@ -324,6 +324,66 @@ fn layers(first: Trace, second: Trace) -> AgentLayer {
         .build()
 }
 
+struct CaptureRequestOptions(Arc<Mutex<Vec<RequestOptions>>>);
+
+#[async_trait]
+impl LayerImpl for CaptureRequestOptions {
+    async fn prepare_request(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        request: StepRequest,
+    ) -> animist::agent::Result<StepRequest> {
+        self.0.lock().await.push(request.options.clone());
+        Ok(request)
+    }
+}
+
+#[tokio::test]
+async fn run_sampling_controls_reach_request_preparation_on_every_step() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let mut registry = ToolRegistry::default();
+    registry
+        .register(Echo(Arc::new(AtomicUsize::new(0))))
+        .unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![call("echo-1", "echo", json!({"text":"hello"}))],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Default::default(),
+        ))
+        .tools(registry)
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(CaptureRequestOptions(captured.clone())))
+                .build(),
+        )
+        .build();
+    let options = RequestOptions::builder()
+        .temperature(0.25)
+        .top_p(0.9)
+        .frequency_penalty(-0.5)
+        .presence_penalty(0.5)
+        .stop_sequences(vec!["END".into()])
+        .max_output_tokens(128_u32)
+        .build();
+    let report = agent
+        .run(
+            input(),
+            RunOptions::builder().request(options.clone()).build(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    assert_eq!(*captured.lock().await, vec![options.clone(), options]);
+}
+
 #[tokio::test]
 async fn external_api_streams_without_tools_and_preserves_metadata() {
     let agent = agent(vec![response(vec![text("done")], StopReason::EndTurn)]);

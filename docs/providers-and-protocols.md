@@ -142,6 +142,56 @@ Adapters must reject reasoning they cannot represent, including unsigned
 thinking without a supported replay field. Redacted payloads are not disposable.
 Any lossy history conversion must be an explicit caller operation.
 
+### Sampling controls
+
+`provider::RequestOptions` is the single source of truth for optional
+`temperature`, `top_p`, `frequency_penalty`, `presence_penalty`, and
+`stop_sequences`. Agents use it through `RunOptions::request` and
+`StepRequest::options`; layers can adjust the same type during preparation.
+Existing thinking, fast mode, and output-limit behavior is unchanged.
+
+```rust
+use animist::{agent::RunOptions, provider::RequestOptions};
+
+let options = RunOptions::builder()
+    .request(RequestOptions::builder()
+        .temperature(0.7)
+        .stop_sequences(vec!["END".into()])
+        .build())
+    .build();
+```
+
+Omitted controls are not sent; explicit zero values and empty stop lists are
+preserved when supported. The settings remain runtime-only, not serializable.
+Builder and `Default` both leave sampling omitted, thinking off, and fast false.
+
+| Boundary | Accepted controls and local policy |
+| --- | --- |
+| Chat Completions | Temperature `[0, 2]`, top-p `[0, 1]`, both penalties `[-2, 2]`, up to four stops. |
+| Responses | Temperature `[0, 2]` and top-p `[0, 1]`. Explicit penalties and stops, including an empty list, are unsupported. |
+| Anthropic Messages | Temperature `[0, 1]` or top-p `[0, 1]`, and stops. Penalties are unsupported. The adapter rejects setting both temperature and top-p, or setting either with enabled/adaptive thinking. |
+| Z.AI Coding Plan | Temperature `[0, 1]`, top-p `[0.01, 1]`, and at most one stop. Penalties are unsupported. |
+
+All numbers must be finite; stop strings must be nonempty. Synthetic, Ollama,
+llama.cpp, and oMLX share the Chat Completions contract. Bedrock follows its
+selected adapter. Z.AI narrows that contract in its provider, using its documented
+single-stop restriction rather than assuming full OpenAI compatibility.
+
+These are conservative adapter contracts, not promises about every model or
+server version. No model-specific sampling capability is inferred from names or
+thinking metadata. Additional model restrictions remain server-validated, and
+HTTP/API failures retain their existing upstream payloads. Protocol validation
+uses public `SamplingError` variants through `ProtocolError::Sampling` and
+`ProviderError::Protocol`; provider-specific restrictions use `ProviderError`.
+Adding request fields and error variants affects struct literals and exhaustive
+matches in downstream crates.
+
+Compatibility references:
+[Synthetic](https://dev.synthetic.new/docs/openai/chat-completions),
+[Ollama](https://docs.ollama.com/api/openai-compatibility),
+[oMLX wire types](https://github.com/jundot/omlx/blob/main/omlx/api/openai_models.py),
+and [Z.AI](https://docs.z.ai/api-reference/llm/chat-completion).
+
 ### Structural replay validation
 
 `protocol::validate_replay(messages, tools)` checks complete inference views.

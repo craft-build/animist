@@ -32,6 +32,54 @@ impl Protocol for Messages {
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
         crate::protocol::validate_replay(input.messages, input.tools)?;
+        crate::protocol::sampling::validate(
+            input.options,
+            "anthropic_messages",
+            1.0,
+            0.0,
+            usize::MAX,
+        )?;
+        for (control, explicit) in [
+            (
+                "frequency_penalty",
+                input.options.frequency_penalty.is_some(),
+            ),
+            ("presence_penalty", input.options.presence_penalty.is_some()),
+        ] {
+            ensure!(
+                !explicit,
+                crate::protocol::sampling::UnsupportedSnafu {
+                    boundary: "anthropic_messages",
+                    control,
+                }
+            );
+        }
+        ensure!(
+            input.options.temperature.is_none() || input.options.top_p.is_none(),
+            crate::protocol::sampling::ConflictSnafu {
+                boundary: "anthropic_messages",
+                control: "temperature",
+                other: "top_p",
+            }
+        );
+        if matches!(
+            options.thinking,
+            Some(super::AnthropicThinking::Enabled { .. } | super::AnthropicThinking::Adaptive)
+        ) {
+            for (control, explicit) in [
+                ("temperature", input.options.temperature.is_some()),
+                ("top_p", input.options.top_p.is_some()),
+            ] {
+                ensure!(
+                    !explicit,
+                    crate::protocol::sampling::ConflictSnafu {
+                        boundary: "anthropic_messages",
+                        control,
+                        other: "thinking",
+                    }
+                );
+            }
+        }
         let mut messages = Vec::new();
         for message in input.messages {
             let mut content = Vec::new();
@@ -139,6 +187,9 @@ impl Protocol for Messages {
             .messages(messages)
             .max_tokens(options.max_tokens)
             .stream(true)
+            .maybe_temperature(input.options.temperature)
+            .maybe_top_p(input.options.top_p)
+            .maybe_stop_sequences(input.options.stop_sequences.clone())
             .maybe_system((!input.system.is_empty()).then_some(input.system))
             .tools(tools)
             .maybe_thinking(options.thinking.clone())

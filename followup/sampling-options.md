@@ -1,5 +1,10 @@
 # Add typed sampling controls across agents, providers, and protocols
 
+**Status: implemented.** Shared request controls, typed validation, protocol wire
+translation, provider compatibility fixtures, and agent forwarding tests are in
+place. See `docs/providers-and-protocols.md` for the compatibility contract.
+The original task below is retained as historical context.
+
 Implement this task in Animist only. Read AGENTS.md and
 docs/providers-and-protocols.md first. Do not migrate Craft or Revelry.
 

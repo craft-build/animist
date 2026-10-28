@@ -45,12 +45,20 @@ pub enum ThinkingConfig {
     Budget(u32),
 }
 
-#[derive(Struct!, Builder)]
+#[derive(Struct!, PartialEq, Builder)]
 #[builder(on(_, into))]
 pub struct RequestOptions {
+    #[builder(default)]
     pub thinking: ThinkingConfig,
+    #[builder(default)]
     pub fast: bool,
     pub max_output_tokens: Option<u32>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub frequency_penalty: Option<f64>,
+    pub presence_penalty: Option<f64>,
+    /// `None` omits the control; `Some(vec![])` sends an explicit empty list.
+    pub stop_sequences: Option<Vec<String>>,
 }
 
 #[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]

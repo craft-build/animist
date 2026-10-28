@@ -116,6 +116,45 @@ impl ProviderImpl for ZaiCodingPlan {
                 provider: self.name()
             }
         );
+        for (control, value, min, max) in [
+            ("temperature", options.temperature, 0.0, 1.0),
+            ("top_p", options.top_p, 0.01, 1.0),
+        ] {
+            if let Some(value) = value {
+                ensure!(
+                    value.is_finite() && (min..=max).contains(&value),
+                    error::SamplingOutOfRangeSnafu {
+                        provider: self.name(),
+                        control,
+                        value,
+                        min,
+                        max,
+                    }
+                );
+            }
+        }
+        for (control, explicit) in [
+            ("frequency_penalty", options.frequency_penalty.is_some()),
+            ("presence_penalty", options.presence_penalty.is_some()),
+        ] {
+            ensure!(
+                !explicit,
+                error::UnsupportedSamplingControlSnafu {
+                    provider: self.name(),
+                    control,
+                }
+            );
+        }
+        if let Some(stops) = &options.stop_sequences {
+            ensure!(
+                stops.len() <= 1,
+                error::TooManyStopSequencesSnafu {
+                    provider: self.name(),
+                    count: stops.len(),
+                    max: 1_usize,
+                }
+            );
+        }
         let thinking = &model.info.features.thinking;
         let (supported, required) = match model.overrides.thinking {
             Some(ThinkingSupport::No) => (false, false),

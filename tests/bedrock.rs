@@ -372,15 +372,19 @@ async fn all_native_routes_use_shared_adapters_and_sigv4() {
         );
         assert_eq!(provider.name(), "amazon-bedrock");
         let (tx, rx) = flume::unbounded();
+        let mut options = RequestOptions::builder().temperature(0.5).build();
+        if protocol != Protocol::AnthropicMessages {
+            options.top_p = Some(0.9);
+        }
+        if protocol != Protocol::Responses {
+            options.stop_sequences = Some(vec!["END".into()]);
+        }
+        if protocol == Protocol::ChatCompletions {
+            options.frequency_penalty = Some(0.25);
+            options.presence_penalty = Some(-0.5);
+        }
         let response = provider
-            .stream_message(
-                &model(),
-                &messages(),
-                "system",
-                &[],
-                &tx,
-                RequestOptions::default(),
-            )
+            .stream_message(&model(), &messages(), "system", &[], &tx, options)
             .await
             .unwrap();
         assert_eq!(response.stop_reason, Some(StopReason::EndTurn));
@@ -414,6 +418,24 @@ async fn all_native_routes_use_shared_adapters_and_sigv4() {
         verify_wire_signature(request, "us-west-2");
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(body["model"], model().id);
+        assert_eq!(body["temperature"], 0.5);
+        if protocol != Protocol::AnthropicMessages {
+            assert_eq!(body["top_p"], 0.9);
+        }
+        if protocol == Protocol::ChatCompletions {
+            assert_eq!(body["frequency_penalty"], 0.25);
+            assert_eq!(body["presence_penalty"], -0.5);
+        }
+        if protocol != Protocol::Responses {
+            assert_eq!(
+                body[if protocol == Protocol::AnthropicMessages {
+                    "stop_sequences"
+                } else {
+                    "stop"
+                }],
+                json!(["END"])
+            );
+        }
         if protocol == Protocol::AnthropicMessages {
             assert_eq!(request.headers["anthropic-version"], "2023-06-01");
             assert_eq!(request.headers["anthropic-beta"], "example-beta");

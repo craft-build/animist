@@ -5,6 +5,8 @@ use super::openai::OpenAIProtocolError;
 #[derive(Debug, Snafu)]
 pub enum ProtocolError {
     #[snafu(transparent)]
+    Sampling { source: super::SamplingError },
+    #[snafu(transparent)]
     Replay { source: super::ReplayError },
     #[snafu(transparent)]
     SystemOne {

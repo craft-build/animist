@@ -14,6 +14,16 @@ pub(super) struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub stream: bool,
     pub stream_options: StreamOptions,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ChatTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,6 +137,10 @@ pub(super) struct ResponsesRequest {
     pub stream: bool,
     pub store: bool,
     pub include: Vec<ResponseInclude>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]

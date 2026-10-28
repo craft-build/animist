@@ -33,6 +33,7 @@ impl Protocol for ChatCompletions {
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
         crate::protocol::validate_replay(input.messages, input.tools)?;
+        crate::protocol::sampling::validate(input.options, "chat_completions", 2.0, 0.0, 4)?;
         let mut messages = Vec::new();
         if !input.system.is_empty() {
             messages.push(ChatMessage::System {
@@ -164,6 +165,11 @@ impl Protocol for ChatCompletions {
             .messages(messages)
             .stream(true)
             .stream_options(StreamOptions::builder().include_usage(true).build())
+            .maybe_temperature(input.options.temperature)
+            .maybe_top_p(input.options.top_p)
+            .maybe_frequency_penalty(input.options.frequency_penalty)
+            .maybe_presence_penalty(input.options.presence_penalty)
+            .maybe_stop(input.options.stop_sequences.clone())
             .tools(tools)
             .maybe_max_completion_tokens(
                 input

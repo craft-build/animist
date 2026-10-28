@@ -291,7 +291,8 @@ charged locally.
 
 ## Follow-ups
 
-See `followup/` for executable task prompts covering sampling
-and application-boundary audits.
+Sampling controls are shared through `RunOptions::request` and
+`StepRequest::options`; see [sampling controls](providers-and-protocols.md#sampling-controls).
+See `followup/` for application-boundary audits and completed task records.
 Craft and Revelry migrations and additional provider integrations are outside
 this workstream.
