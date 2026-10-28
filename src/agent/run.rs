@@ -11,6 +11,7 @@ use flume::Sender;
 use tokio::sync::{Mutex, watch};
 
 use crate::{
+    StructWithCustomDefault,
     history::{Message, StoredMessage},
     provider::{Model, ProviderEvent, RequestOptions, StopReason, TokenUsage, Tool},
 };
@@ -114,6 +115,12 @@ pub enum AgentEvent {
         message: Message,
         usage: TokenUsage,
         stop_reason: Option<StopReason>,
+    },
+    /// Durable user messages layers appended at a step boundary.
+    MessagesAppended {
+        run_id: u64,
+        step: u64,
+        messages: Vec<StoredMessage>,
     },
     /// The next inference attempt after a layer-requested retry.
     Retrying { attempt: u64 },
@@ -290,6 +297,20 @@ pub struct StepRequest {
     pub system: String,
     pub tools: Vec<Tool>,
     pub options: RequestOptions,
+}
+
+/// What one finished step produced, before termination is decided.
+#[derive(StructWithCustomDefault!)]
+pub struct StepOutcome {
+    /// Zero-based step index within the run.
+    pub step: u64,
+    /// The assembled assistant message the step produced.
+    pub response: Message,
+    /// Provider-reported stop reason of the step's response.
+    pub stop_reason: Option<StopReason>,
+    /// Status the run takes if no layer continues it; `None` when the
+    /// step's tool calls mean the run continues regardless.
+    pub terminal: Option<RunStatus>,
 }
 
 /// A structured tool failure retained for the run report.

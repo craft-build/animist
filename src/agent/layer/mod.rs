@@ -2,10 +2,10 @@ use arc_handle::arc_handle;
 use async_trait::async_trait;
 use bon::Builder;
 
-use crate::{history::StoredMessage, provider::StreamResponse};
+use crate::{Struct, history::StoredMessage, provider::StreamResponse};
 
 use super::{
-    Agent, Result, RunContext, RunStatus, StepRequest,
+    Agent, Result, RunContext, RunStatus, StepOutcome, StepRequest,
     tool::{ToolContext, ToolOutput},
 };
 
@@ -27,6 +27,18 @@ pub enum Recovery {
     Propagate,
     /// Retry inference within the run's retry budget.
     Retry,
+}
+
+/// Layer decision at a step boundary.
+#[derive(Struct!, Builder)]
+#[builder(on(_, into))]
+pub struct StepAction {
+    /// Durable user messages to append before the next inference attempt.
+    #[builder(default)]
+    pub messages: Vec<StoredMessage>,
+    /// Continue the run when the step would otherwise terminate it.
+    #[builder(default)]
+    pub continue_run: bool,
 }
 
 /// Hooks run head-to-tail; transformations consume the preceding result.
@@ -95,6 +107,17 @@ pub trait Layer {
         _error: &super::AgentError,
     ) -> Result<Recovery> {
         Ok(Recovery::Propagate)
+    }
+
+    /// Runs after a step's results commit, before termination is decided.
+    /// Returns messages to append durably and whether to continue the run.
+    async fn step_end(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        _outcome: &StepOutcome,
+    ) -> Result<StepAction> {
+        Ok(StepAction::default())
     }
 
     /// Observes the terminal status of every admitted run.
@@ -229,6 +252,25 @@ impl LayerImpl for AgentLayer {
             },
             Recovery::Retry => Ok(Recovery::Retry),
         }
+    }
+
+    async fn step_end(
+        &self,
+        agent: &Agent,
+        run: &RunContext,
+        outcome: &StepOutcome,
+    ) -> Result<StepAction> {
+        let head = self.layer.step_end(agent, run, outcome).await?;
+        let Some(next) = self.next.as_ref() else {
+            return Ok(head);
+        };
+        let tail = next.step_end(agent, run, outcome).await?;
+        let mut messages = head.messages;
+        messages.extend(tail.messages);
+        Ok(StepAction::builder()
+            .messages(messages)
+            .continue_run(head.continue_run || tail.continue_run)
+            .build())
     }
 
     async fn turn_end(&self, agent: &Agent, run: &RunContext, status: RunStatus) -> Result<()> {

@@ -70,12 +70,17 @@ pub enum AgentError {
         actual: crate::history::Role,
         backtrace: snafu::Backtrace,
     },
-    #[snafu(display("Submitted input must not contain tool calls or results"))]
+    #[snafu(display("Submitted or appended input must not contain tool calls or results"))]
     ToolInputMessage { backtrace: snafu::Backtrace },
     #[snafu(display("Assistant response must not contain tool results"))]
     AssistantToolResult { backtrace: snafu::Backtrace },
     #[snafu(display("Provider stopped for tool use but supplied no tool calls"))]
     MissingToolCalls { backtrace: snafu::Backtrace },
+    #[snafu(display("Layers requested continuation from {status:?}, which cannot continue"))]
+    UnsupportedContinuation {
+        status: super::RunStatus,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("Run failed: {source}; finalization also failed: {cleanup}"))]
     Finalization {
         source: Box<AgentError>,

@@ -61,6 +61,7 @@ list. All hooks execute head-to-tail, including completion and shutdown.
 | `pre_tool_exec` | Authorize an individual call, including child calls |
 | `post_tool_exec` | Transform a model-visible tool outcome |
 | `recover` | Explicitly request a bounded provider retry |
+| `step_end` | Append durable user messages at a step boundary; request continuation |
 | `turn_end` | Observe every admitted run's terminal status |
 | `shutdown` | Release initialized resources |
 
@@ -91,6 +92,34 @@ An interrupted execution's explicit error result is structurally complete.
 Historical tool names need not be currently registered or advertised.
 Tool declaration membership in the frozen registry remains a separate execution
 constraint. See the shared replay rules in `docs/providers-and-protocols.md`.
+
+### Step boundaries
+
+`step_end` runs head-to-tail after a step's tool results are fully committed
+and before termination is decided. Each layer receives a `StepOutcome` — step
+index, the assembled assistant message, its stop reason, and the terminal
+status the run takes if nothing continues it (`None` when the step's tool
+calls keep the run going). It returns a `StepAction`: durable `Role::User`
+messages to append, typically `MessageKind::Observation`, and whether to
+continue a run that would otherwise terminate. Messages from all layers append
+in layer order, in one atomic commit.
+
+Appends are validated before anything commits: `Role::User`, no tool-use or
+tool-result blocks, and a replay-valid resulting view. Rejections are specific
+errors (`InvalidRole`, `ToolInputMessage`, `Replay`) and commit nothing. The
+commit uses the same optimistic exchange path as model exchanges, comparing
+against the post-tool snapshot, so an external edit that snapshot does not
+reflect — including one made inside another `step_end` hook — fails
+with `HistoryChanged` and retains the uncommitted messages in the error.
+Appended messages are emitted as `MessagesAppended` events so surfaces can
+render them, and remain durable even when the run terminates right after.
+
+A continuation is honored from `Completed`, `MaxTokens`, and `Paused` only;
+requesting one from `Refused` or `ContextWindowExceeded` fails with
+`UnsupportedContinuation` before any message commits. Each continuation
+consumes a step from `max_steps`; a request with no budget left ends the run
+with `StepLimit` while appended messages still commit. Terminal statuses stay
+distinct — the runtime never continues or synthesizes a prompt itself.
 
 ## Typed tools
 
@@ -211,7 +240,9 @@ independent. Provider errors propagate unless a layer requests recovery.
 `MaxTokens`, `Paused`, `Refused`, and `ContextWindowExceeded` are distinct terminal
 statuses, not successful completions or implicit continuation requests. Tool calls
 in these responses are closed with not-executed results. The minimal runtime does
-not synthesize continuation prompts.
+not synthesize continuation prompts; a layer may continue a run explicitly from
+`Completed`, `MaxTokens`, or `Paused` through `step_end` (see *Step boundaries*),
+never from `Refused` or `ContextWindowExceeded`.
 
 Before executing tools, the runtime atomically records the assistant message and
 explicit interrupted/not-completed results for every call. Each finished result
@@ -247,7 +278,9 @@ The agent does not overwrite external history edits. Exchange commits compare
 the expected history and use the existing optimistic atomic compaction contract.
 Conflicts preserve uncommitted messages in the error payload. Do not mutate the
 agent's history concurrently with a run unless prepared to handle that conflict.
-Use request-only transformations for temporary context.
+Use request-only transformations for temporary context, or `step_end` appends
+for durable messages; the step-boundary commit spans the same window, so an
+edit after the step's last committed result conflicts.
 
 ## Events and statistics
 
@@ -259,8 +292,9 @@ authoritative. Prefer one channel per run, especially when tool IDs may repeat
 across conversations.
 
 Provider events carry run/step/attempt identity. Other events report tool start,
-progress, structured failure, completion, step completion, retries, and final
-status. These events are runtime observations, not a durable persistence backend.
+progress, structured failure, completion, step completion, step-boundary message
+appends, retries, and final status. These events are runtime observations, not a
+durable persistence backend.
 
 Attempt IDs are zero-based and monotonic within a run, across both steps and
 retries. `AttemptInterrupted` identifies abandoned output; `Retrying::attempt`

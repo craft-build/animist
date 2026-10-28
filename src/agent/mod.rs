@@ -9,11 +9,11 @@ pub mod tool;
 
 pub use config::AgentConfig;
 pub use error::AgentError;
-pub use layer::{AgentLayer, Layer, LayerImpl, Recovery, ToolDecision};
+pub use layer::{AgentLayer, Layer, LayerImpl, Recovery, StepAction, ToolDecision};
 pub use prompt::{Prompt, Section};
 pub use run::{
     AgentEvent, Cancellation, InterruptedAttempt, RunContext, RunOptions, RunReport, RunStats,
-    RunStatus, StatsSnapshot, StepRequest, ToolFailure,
+    RunStatus, StatsSnapshot, StepOutcome, StepRequest, ToolFailure,
 };
 
 use crate::{
@@ -449,7 +449,7 @@ impl Agent {
                 }
             }
             run.emit(AgentEvent::StepFinished {
-                message: response.message,
+                message: response.message.clone(),
                 usage: response.usage,
                 stop_reason: response.stop_reason.clone(),
             })
@@ -458,7 +458,7 @@ impl Agent {
             if let Some(error) = failure {
                 return Err(error);
             }
-            let terminal = match response.stop_reason {
+            let terminal = match response.stop_reason.clone() {
                 Some(StopReason::MaxTokens) => Some(RunStatus::MaxTokens),
                 Some(StopReason::PauseTurn) => Some(RunStatus::Paused),
                 Some(StopReason::Refusal) => Some(RunStatus::Refused),
@@ -466,7 +466,34 @@ impl Agent {
                 _ if calls.is_empty() => Some(RunStatus::Completed),
                 _ => None,
             };
-            if let Some(status) = terminal {
+            let boundary = self.history.snapshot().await;
+            let outcome = StepOutcome {
+                step: step.into(),
+                response: response.message,
+                stop_reason: response.stop_reason,
+                terminal,
+            };
+            let action = match &self.layers {
+                Some(layers) => {
+                    run.cancellation
+                        .race(layers.step_end(self, run, &outcome))
+                        .await?
+                }
+                None => StepAction::default(),
+            };
+            if action.continue_run
+                && let Some(status @ (RunStatus::Refused | RunStatus::ContextWindowExceeded)) =
+                    terminal
+            {
+                return Err(error::UnsupportedContinuationSnafu { status }.build());
+            }
+            if !action.messages.is_empty() {
+                self.append_step_messages(run, step.into(), &boundary, action.messages)
+                    .await?;
+            }
+            if !action.continue_run
+                && let Some(status) = terminal
+            {
                 return Ok(RunReport {
                     id: run.id,
                     status,
@@ -485,6 +512,64 @@ impl Agent {
             tool_failures: run.tool_failures().await,
             interrupted_attempts: run.interrupted_attempts().await,
         })
+    }
+
+    /// Validates and atomically appends step-boundary messages against the
+    /// post-step snapshot; any other edit in the window fails unchanged.
+    async fn append_step_messages(
+        &self,
+        run: &RunContext,
+        step: u64,
+        boundary: &HistorySnapshot,
+        messages: Vec<StoredMessage>,
+    ) -> Result<()> {
+        for message in &messages {
+            let content = message.message();
+            if content.role != Role::User {
+                return Err(error::InvalidRoleSnafu {
+                    expected: Role::User,
+                    actual: content.role.clone(),
+                }
+                .build());
+            }
+            if content.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                )
+            }) {
+                return Err(error::ToolInputMessageSnafu.build());
+            }
+        }
+        let definitions = self.tools.definitions();
+        let mut view: Vec<_> = boundary
+            .entries()
+            .iter()
+            .filter_map(HistoryEntry::current)
+            .map(|stored| stored.message().clone())
+            .collect();
+        view.extend(messages.iter().map(|stored| stored.message().clone()));
+        crate::protocol::validate_replay(&view, &definitions)?;
+        let edits = messages
+            .iter()
+            .map(|message| CompactionEdit::Insert {
+                before: boundary.entries().len(),
+                message: message.clone(),
+            })
+            .collect();
+        self.history
+            .compact(ExchangeCommit {
+                expected: boundary.entries().to_vec(),
+                edits,
+            })
+            .await?;
+        run.emit(AgentEvent::MessagesAppended {
+            run_id: run.id,
+            step,
+            messages,
+        })
+        .await;
+        Ok(())
     }
 
     async fn stream(

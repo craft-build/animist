@@ -12,7 +12,7 @@ use std::{
 use animist::{
     agent::{
         Agent, AgentConfig, AgentError, AgentEvent, AgentLayer, Cancellation, Layer, LayerImpl,
-        Recovery, RunContext, RunOptions, RunStatus, Section, StepRequest,
+        Recovery, RunContext, RunOptions, RunStatus, Section, StepAction, StepOutcome, StepRequest,
         tool::{
             IntoToolOutput, ToolCall, ToolContent, ToolContext, ToolDefinition, ToolError,
             ToolImpl, ToolOutput, ToolRegistry,
@@ -2117,5 +2117,495 @@ async fn child_depth_errors_are_structured_even_without_an_event_observer() {
     assert!(
         matches!(&*report.tool_failures[0].error, animist::agent::tool::ToolError::Execution { source }
         if matches!(source.downcast_ref::<AgentError>(), Some(AgentError::ToolDepthExceeded { .. })))
+    );
+}
+
+fn observation(text: &str) -> StoredMessage {
+    StoredMessage::builder()
+        .timestamp(jiff::Timestamp::now())
+        .message(
+            Message::builder()
+                .role(Role::User)
+                .kind(MessageKind::Observation)
+                .content(vec![ContentBlock::Text { text: text.into() }])
+                .build(),
+        )
+        .build()
+}
+
+struct Grace(&'static str);
+
+#[async_trait]
+impl LayerImpl for Grace {
+    async fn step_end(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        _outcome: &StepOutcome,
+    ) -> animist::agent::Result<StepAction> {
+        Ok(StepAction::builder()
+            .messages(vec![observation(self.0)])
+            .build())
+    }
+}
+
+struct Nudge(&'static str);
+
+#[async_trait]
+impl LayerImpl for Nudge {
+    async fn step_end(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        _outcome: &StepOutcome,
+    ) -> animist::agent::Result<StepAction> {
+        Ok(StepAction::builder()
+            .messages(vec![observation(self.0)])
+            .continue_run(true)
+            .build())
+    }
+}
+
+struct ContinueFrom(RunStatus);
+
+#[async_trait]
+impl LayerImpl for ContinueFrom {
+    async fn step_end(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        outcome: &StepOutcome,
+    ) -> animist::agent::Result<StepAction> {
+        Ok(StepAction::builder()
+            .continue_run(outcome.terminal == Some(self.0))
+            .build())
+    }
+}
+
+struct AppendFixed(StoredMessage);
+
+#[async_trait]
+impl LayerImpl for AppendFixed {
+    async fn step_end(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        _outcome: &StepOutcome,
+    ) -> animist::agent::Result<StepAction> {
+        Ok(StepAction::builder().messages(vec![self.0.clone()]).build())
+    }
+}
+
+struct TraceStepEnd {
+    name: &'static str,
+    log: Arc<Mutex<Vec<String>>>,
+    text: &'static str,
+}
+
+#[async_trait]
+impl LayerImpl for TraceStepEnd {
+    async fn step_end(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        outcome: &StepOutcome,
+    ) -> animist::agent::Result<StepAction> {
+        self.log
+            .lock()
+            .await
+            .push(format!("{}:step_end:{}", self.name, outcome.step));
+        Ok(StepAction::builder()
+            .messages(vec![observation(self.text)])
+            .build())
+    }
+}
+
+struct EditDuringStepEnd;
+
+#[async_trait]
+impl LayerImpl for EditDuringStepEnd {
+    async fn step_end(
+        &self,
+        agent: &Agent,
+        _run: &RunContext,
+        _outcome: &StepOutcome,
+    ) -> animist::agent::Result<StepAction> {
+        agent.history().add_stored(input()).await;
+        Ok(StepAction::builder()
+            .messages(vec![observation("grace")])
+            .build())
+    }
+}
+
+struct HangingStepEnd;
+
+#[async_trait]
+impl LayerImpl for HangingStepEnd {
+    async fn step_end(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        _outcome: &StepOutcome,
+    ) -> animist::agent::Result<StepAction> {
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn step_boundary_messages_reach_history_events_and_the_next_request() {
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(Arc::default())).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (tx, rx) = flume::unbounded();
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![call("1", "echo", json!({"text":"hi"}))],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Arc::clone(&requests),
+        ))
+        .tools(tools)
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(Grace("budget left")))
+                .build(),
+        )
+        .build();
+    let report = agent
+        .run(input(), RunOptions::builder().events(tx).build())
+        .await
+        .unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    assert_eq!(report.stats.steps, 2);
+    let history = agent.history().current().await;
+    assert_eq!(history.len(), 6);
+    assert_eq!(history[3].kind, MessageKind::Observation);
+    for index in [3, 5] {
+        assert!(
+            matches!(&history[index].content[..], [ContentBlock::Text { text }]
+            if text == "budget left")
+        );
+    }
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .iter()
+            .any(|message| message.kind == MessageKind::Observation
+                && matches!(&message.content[..], [ContentBlock::Text { text }]
+                if text == "budget left"))
+    );
+    let appended: Vec<_> = rx
+        .try_iter()
+        .filter_map(|event| match event {
+            AgentEvent::MessagesAppended { step, messages, .. } => Some((step, messages)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        appended
+            .iter()
+            .map(|(step, messages)| (*step, messages.len()))
+            .collect::<Vec<_>>(),
+        vec![(0, 1), (1, 1)]
+    );
+    assert!(
+        appended
+            .iter()
+            .all(|(_, messages)| matches!(&messages[0].message().content[..],
+                [ContentBlock::Text { text }] if text == "budget left"))
+    );
+}
+
+#[tokio::test]
+async fn continuation_after_an_empty_reply_runs_another_step_within_max_steps() {
+    for (max_steps, attempts, history_len) in [(1_u32, 1_u64, 3_usize), (2, 2, 5)] {
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(vec![text("first")], StopReason::EndTurn),
+                    response(vec![text("second")], StopReason::EndTurn),
+                ],
+                false,
+                Arc::default(),
+            ))
+            .config(AgentConfig::builder().max_steps(max_steps).build())
+            .layers(
+                AgentLayer::builder()
+                    .layer(Layer::new(Nudge("please continue")))
+                    .build(),
+            )
+            .build();
+        let report = agent.run(input(), RunOptions::default()).await.unwrap();
+        assert_eq!(report.status, RunStatus::StepLimit);
+        assert_eq!(report.stats.attempts, attempts);
+        let history = agent.history().current().await;
+        assert_eq!(history.len(), history_len);
+        assert!(history.iter().any(
+            |message| matches!(&message.content[..], [ContentBlock::Text { text }]
+                if text == "please continue")
+        ));
+    }
+}
+
+#[tokio::test]
+async fn max_tokens_and_paused_continue_when_a_layer_opts_in() {
+    for (reason, terminal) in [
+        (StopReason::MaxTokens, RunStatus::MaxTokens),
+        (StopReason::PauseTurn, RunStatus::Paused),
+    ] {
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(vec![text("partial")], reason),
+                    response(vec![text("rest")], StopReason::EndTurn),
+                ],
+                false,
+                Arc::default(),
+            ))
+            .layers(
+                AgentLayer::builder()
+                    .layer(Layer::new(ContinueFrom(terminal)))
+                    .build(),
+            )
+            .build();
+        let report = agent.run(input(), RunOptions::default()).await.unwrap();
+        assert_eq!(report.status, RunStatus::Completed);
+        assert_eq!(report.stats.attempts, 2);
+        assert_eq!(report.stats.steps, 2);
+    }
+}
+
+#[tokio::test]
+async fn step_boundary_appends_reject_non_replay_views() {
+    let thinking = StoredMessage::builder()
+        .timestamp(jiff::Timestamp::now())
+        .message(
+            Message::builder()
+                .role(Role::User)
+                .kind(MessageKind::Observation)
+                .content(vec![ContentBlock::Thinking {
+                    thinking: "posed".into(),
+                    signature: None,
+                }])
+                .build(),
+        )
+        .build();
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(vec![text("done")], StopReason::EndTurn)],
+            false,
+            Arc::default(),
+        ))
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(AppendFixed(thinking)))
+                .build(),
+        )
+        .build();
+    let error = agent.run(input(), RunOptions::default()).await.unwrap_err();
+    assert!(matches!(error, AgentError::Replay { .. }));
+    assert_eq!(agent.history().current().await.len(), 2);
+}
+
+#[tokio::test]
+async fn refused_and_context_window_exceeded_cannot_be_continued() {
+    for (reason, status) in [
+        (StopReason::Refusal, RunStatus::Refused),
+        (
+            StopReason::ContextWindowExceeded,
+            RunStatus::ContextWindowExceeded,
+        ),
+    ] {
+        let agent = Agent::builder()
+            .model(model(
+                vec![response(vec![text("no")], reason)],
+                false,
+                Arc::default(),
+            ))
+            .layers(
+                AgentLayer::builder()
+                    .layer(Layer::new(ContinueFrom(status)))
+                    .build(),
+            )
+            .build();
+        let error = agent.run(input(), RunOptions::default()).await.unwrap_err();
+        assert!(matches!(error, AgentError::UnsupportedContinuation {
+            status: denied,
+            ..
+        } if denied == status));
+        assert_eq!(agent.history().current().await.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn step_boundary_appends_reject_edits_during_the_step() {
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(vec![text("done")], StopReason::EndTurn)],
+            false,
+            Arc::default(),
+        ))
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(EditDuringStepEnd))
+                .build(),
+        )
+        .build();
+    let error = agent.run(input(), RunOptions::default()).await.unwrap_err();
+    let AgentError::History { source } = &error else {
+        panic!("expected a history conflict, got {error:?}")
+    };
+    assert!(matches!(
+        &**source,
+        animist::history::HistoryError::Transformation {
+            source: animist::Error::Agent {
+                source: AgentError::HistoryChanged { messages, .. },
+            },
+        } if messages.len() == 1
+            && matches!(&messages[0].message().content[..], [ContentBlock::Text { text }]
+                if text == "grace")
+    ));
+    let history = agent.history().current().await;
+    assert_eq!(history.len(), 3);
+    assert!(
+        matches!(&history[2].content[..], [ContentBlock::Text { text }]
+        if text == "hello")
+    );
+}
+
+#[tokio::test]
+async fn step_boundary_appends_reject_assistant_roles_and_tool_blocks() {
+    let assistant = StoredMessage::builder()
+        .timestamp(jiff::Timestamp::now())
+        .message(message(Role::Assistant, vec![text("posing")]))
+        .build();
+    let tooled = StoredMessage::builder()
+        .timestamp(jiff::Timestamp::now())
+        .message(
+            Message::builder()
+                .role(Role::User)
+                .kind(MessageKind::Observation)
+                .content(vec![call("1", "echo", json!({}))])
+                .build(),
+        )
+        .build();
+    for (message, invalid) in [(assistant, "role"), (tooled, "tool blocks")] {
+        let agent = Agent::builder()
+            .model(model(
+                vec![response(vec![text("done")], StopReason::EndTurn)],
+                false,
+                Arc::default(),
+            ))
+            .layers(
+                AgentLayer::builder()
+                    .layer(Layer::new(AppendFixed(message)))
+                    .build(),
+            )
+            .build();
+        let error = agent.run(input(), RunOptions::default()).await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                AgentError::InvalidRole { .. } | AgentError::ToolInputMessage { .. }
+            ),
+            "expected rejection for {invalid}, got {error:?}"
+        );
+        assert_eq!(agent.history().current().await.len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn step_end_hooks_run_head_to_tail_and_append_in_layer_order() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let first = TraceStepEnd {
+        name: "a",
+        log: Arc::clone(&log),
+        text: "first",
+    };
+    let second = TraceStepEnd {
+        name: "b",
+        log: Arc::clone(&log),
+        text: "second",
+    };
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(vec![text("done")], StopReason::EndTurn)],
+            false,
+            Arc::default(),
+        ))
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(first))
+                .next(Box::new(
+                    AgentLayer::builder().layer(Layer::new(second)).build(),
+                ))
+                .build(),
+        )
+        .build();
+    let report = agent.run(input(), RunOptions::default()).await.unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    assert_eq!(
+        *log.lock().await,
+        vec!["a:step_end:0".to_string(), "b:step_end:0".to_string()]
+    );
+    let history = agent.history().current().await;
+    assert_eq!(history.len(), 4);
+    assert!(
+        matches!(&history[2].content[..], [ContentBlock::Text { text }]
+        if text == "first")
+    );
+    assert!(
+        matches!(&history[3].content[..], [ContentBlock::Text { text }]
+        if text == "second")
+    );
+}
+
+#[tokio::test]
+async fn cancellation_during_step_end_returns_cancelled_without_appending() {
+    let cancellation = Cancellation::default();
+    let (tx, rx) = flume::unbounded();
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(vec![text("done")], StopReason::EndTurn)],
+            false,
+            Arc::default(),
+        ))
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(HangingStepEnd))
+                .build(),
+        )
+        .build();
+    let running = agent.run(
+        input(),
+        RunOptions::builder()
+            .cancellation(cancellation.clone())
+            .events(tx)
+            .build(),
+    );
+    tokio::pin!(running);
+    loop {
+        tokio::select! {
+            result = &mut running => panic!("unexpected result: {result:?}"),
+            event = rx.recv_async() => {
+                if matches!(event, Ok(AgentEvent::StepFinished { .. })) {
+                    break;
+                }
+            }
+        }
+    }
+    cancellation.cancel();
+    let report = running.await.unwrap();
+    assert_eq!(report.status, RunStatus::Cancelled);
+    assert_eq!(agent.history().current().await.len(), 2);
+    assert!(
+        !rx.try_iter()
+            .any(|event| matches!(event, AgentEvent::MessagesAppended { .. }))
     );
 }
