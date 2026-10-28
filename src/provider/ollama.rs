@@ -7,7 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 
-use super::*;
+use super::{
+    Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message,
+    Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse,
+    ThinkingConfig, ThinkingSupport, Tool, clamp_error_body, error,
+};
 use crate::protocol::{
     EmbeddingProtocol, Protocol, ProtocolInput,
     openai::{ChatCompletions, ChatReasoningField, ChatTokenLimit, OpenAiOptions},
@@ -18,6 +22,7 @@ use crate::protocol::{
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct OllamaConfig {
+    /// API root prepended to request paths.
     #[builder(default = "http://localhost:11434/v1".to_owned())]
     pub base_url: String,
     /// Optional metadata for models returned by the server.
@@ -30,12 +35,15 @@ impl Default for OllamaConfig {
     }
 }
 
+/// Local Ollama provider over its Chat Completions compatibility surface.
+#[derive(Debug)]
 pub struct Ollama {
     config: OllamaConfig,
     client: reqwest::Client,
 }
 
 impl Ollama {
+    /// Binds the provider to its settings without probing the server.
     pub fn new(config: OllamaConfig) -> Self {
         Self {
             config,
@@ -44,6 +52,7 @@ impl Ollama {
     }
 
     /// Replaces the runtime HTTP client without changing serializable settings.
+    #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
@@ -74,7 +83,7 @@ impl Ollama {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.context(error::TransportSnafu)?;
+            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
             return error::HttpSnafu { status, body }.fail();
         }
         Ok(response)
@@ -83,7 +92,7 @@ impl Ollama {
 
 #[async_trait]
 impl ProviderImpl for Ollama {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ollama"
     }
 
@@ -122,15 +131,7 @@ impl ProviderImpl for Ollama {
             ThinkingConfig::Adaptive => None,
             ThinkingConfig::Effort(Effort::Adaptive) if supported => None,
             ThinkingConfig::Effort(effort) if supported && thinking.efforts.contains(effort) => {
-                Some(match effort {
-                    Effort::Minimal => "minimal",
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                    Effort::XHigh => "xhigh",
-                    Effort::Max => "max",
-                    Effort::Adaptive => unreachable!(),
-                })
+                effort.openai_wire()
             }
             ThinkingConfig::Budget(_) => return error::ReasoningBudgetUnsupportedSnafu.fail(),
             ThinkingConfig::Effort(effort) => {
@@ -199,7 +200,7 @@ impl ProviderImpl for Ollama {
 
 #[async_trait]
 impl EmbeddingProviderImpl for Ollama {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ollama"
     }
 

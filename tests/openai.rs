@@ -1,3 +1,7 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
+use std::fmt::Write as _;
+
 use animist::history::{ContentBlock, ImageSource, Message, MessageKind, Role};
 use animist::protocol::{ProtocolError, openai::OpenAIProtocolError};
 use animist::provider::{
@@ -34,16 +38,16 @@ async fn incompatible_reasoning_history_fails_before_transport_with_typed_errors
                 ProviderError::Protocol {
                     source:
                         ProtocolError::OpenAI {
-                            source: OpenAIProtocolError::ChatReasoningReplayDisabled,
+                            source: OpenAIProtocolError::ChatReasoningReplayDisabled { .. },
                         },
                 },
-            ) => {}
-            (
+            )
+            | (
                 Protocol::Responses,
                 ProviderError::Protocol {
                     source:
                         ProtocolError::OpenAI {
-                            source: OpenAIProtocolError::MissingResponsesReasoningItem,
+                            source: OpenAIProtocolError::MissingResponsesReasoningItem { .. },
                         },
                 },
             ) => {}
@@ -139,7 +143,7 @@ fn provider_config_round_trips_with_defaults_and_without_credentials() {
     let serialized = serde_json::to_value(&config).unwrap();
     assert_eq!(serialized["protocol"], "chat_completions");
     let restored: OpenAiConfig = serde_json::from_value(serialized).unwrap();
-    assert!(restored == config.clone());
+    assert!(restored == config);
 
     let defaults: OpenAiConfig = serde_json::from_value(json!({})).unwrap();
     assert!(defaults == OpenAiConfig::default());
@@ -158,10 +162,18 @@ fn provider_config_round_trips_with_defaults_and_without_credentials() {
 }
 
 fn sse(events: Vec<Value>) -> String {
-    events
-        .into_iter()
-        .map(|event| format!("event: ignored\r\ndata: {event}\r\n\r\n"))
-        .collect()
+    let mut body = String::new();
+    for event in events {
+        write!(body, "event: ignored\r\ndata: {event}\r\n\r\n")
+            .expect("String formatting is infallible");
+    }
+    body
+}
+
+fn sse_done(events: Vec<Value>) -> String {
+    let mut body = sse(events);
+    body.push_str("data: [DONE]\n\n");
+    body
 }
 
 fn tool() -> Tool {
@@ -200,7 +212,9 @@ async fn chat_streams_interleaved_calls_and_usage() {
             {"index":0,"function":{"arguments":"\"a\"}"}}
         ]},"finish_reason":"tool_calls"}]}),
         json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40}}}),
-    ]) + "data: [DONE]\r\n\r\n";
+    ]);
+    let mut body = body;
+    body.push_str("data: [DONE]\r\n\r\n");
     let (url, task) = server(200, body).await;
     let (tx, rx) = flume::unbounded();
     let response = provider(&url, Protocol::ChatCompletions)
@@ -355,6 +369,7 @@ async fn errors_and_truncated_streams_return_errors() {
             ]),
             Some(OpenAIProtocolError::TruncatedChatStream {
                 finish_reason: None,
+                backtrace: std::backtrace::Backtrace::capture(),
             }),
         ),
         (
@@ -365,6 +380,7 @@ async fn errors_and_truncated_streams_return_errors() {
             ]),
             Some(OpenAIProtocolError::ResponseFailed {
                 error: json!({"message":"failed"}),
+                backtrace: std::backtrace::Backtrace::capture(),
             }),
         ),
         (
@@ -373,7 +389,9 @@ async fn errors_and_truncated_streams_return_errors() {
             sse(vec![
                 json!({"type":"response.output_text.delta","delta":"partial"}),
             ]),
-            Some(OpenAIProtocolError::TruncatedResponsesStream),
+            Some(OpenAIProtocolError::TruncatedResponsesStream {
+                backtrace: std::backtrace::Backtrace::capture(),
+            }),
         ),
     ] {
         let (url, task) = server(status, body).await;
@@ -393,7 +411,7 @@ async fn errors_and_truncated_streams_return_errors() {
                 std::mem::discriminant(&source),
                 std::mem::discriminant(&expected)
             );
-            if let OpenAIProtocolError::ResponseFailed { error } = source {
+            if let OpenAIProtocolError::ResponseFailed { error, .. } = source {
                 assert_eq!(error, json!({"message":"failed"}));
             }
         } else {
@@ -425,7 +443,7 @@ async fn list_models_uses_api_ids_without_inventing_capabilities() {
 async fn auth_and_unsupported_options_fail_before_network_access() {
     assert!(matches!(
         OpenAi::new(OpenAiConfig::builder().api_key("").build()),
-        Err(ProviderError::EmptyApiKey)
+        Err(ProviderError::EmptyApiKey { .. })
     ));
     assert!(matches!(
         OpenAi::new(
@@ -433,7 +451,7 @@ async fn auth_and_unsupported_options_fail_before_network_access() {
                 .api_key_env("ANIMIST_TEST_MISSING_KEY_59630")
                 .build()
         ),
-        Err(ProviderError::Credentials { .. })
+        Err(ProviderError::CredentialEnvironment { .. })
     ));
     let provider = provider("http://127.0.0.1:1", Protocol::Responses);
     provider.refresh_auth().await.unwrap();
@@ -454,7 +472,7 @@ async fn auth_and_unsupported_options_fail_before_network_access() {
         .await;
     assert!(matches!(
         result,
-        Err(ProviderError::ReasoningBudgetUnsupported)
+        Err(ProviderError::ReasoningBudgetUnsupported { .. })
     ));
 }
 
@@ -463,9 +481,9 @@ async fn both_protocols_report_output_limits() {
     for (protocol, body) in [
         (
             Protocol::ChatCompletions,
-            sse(vec![
+            sse_done(vec![
                 json!({"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"length"}]}),
-            ]) + "data: [DONE]\n\n",
+            ]),
         ),
         (
             Protocol::Responses,
@@ -495,9 +513,9 @@ async fn both_protocols_report_output_limits() {
 async fn chat_replays_tool_results_before_followup_text() {
     let (url, task) = server(
         200,
-        sse(vec![
+        sse_done(vec![
             json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
-        ]) + "data: [DONE]\n\n",
+        ]),
     )
     .await;
     let previous = Message::builder()
@@ -549,11 +567,9 @@ async fn reasoning_policy_is_explicit_and_respects_overrides() {
     use animist::provider::{Effort, ThinkingSupport};
     for protocol in [Protocol::ChatCompletions, Protocol::Responses] {
         let body = match protocol {
-            Protocol::ChatCompletions => {
-                sse(vec![
-                    json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
-                ]) + "data: [DONE]\n\n"
-            }
+            Protocol::ChatCompletions => sse_done(vec![
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+            ]),
             Protocol::Responses => sse(vec![
                 json!({"type":"response.completed","response":{"status":"completed","output":[]}}),
             ]),
@@ -569,7 +585,7 @@ async fn reasoning_policy_is_explicit_and_respects_overrides() {
             provider
                 .stream_message(&model, &[], "", &[], &tx, RequestOptions::default())
                 .await,
-            Err(ProviderError::ReasoningRequired)
+            Err(ProviderError::ReasoningRequired { .. })
         ));
         provider
             .stream_message(
@@ -603,7 +619,7 @@ async fn malformed_tool_json_and_refusals_are_not_successes() {
             Protocol::ChatCompletions,
             sse(vec![
                 json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"f","arguments":"{"}}]},"finish_reason":"tool_calls"}]}),
-            ]) + "data: [DONE]\n\n",
+            ]),
             Some("c"),
         ),
         (
@@ -645,7 +661,7 @@ async fn malformed_tool_json_and_refusals_are_not_successes() {
                 assert_eq!(id, expected);
                 assert!(source.is_eof());
             }
-            (None, OpenAIProtocolError::Refusal) => {}
+            (None, OpenAIProtocolError::Refusal { .. }) => {}
             (_, source) => panic!("Unexpected OpenAI error: {source:?}"),
         }
         task.await.unwrap();
@@ -707,7 +723,7 @@ async fn dropping_stream_future_closes_the_exchange() {
             tokio::select! {
                 event = rx.recv_async() => assert!(matches!(event.unwrap(), ProviderEvent::TextDelta { .. })),
                 result = &mut stream => panic!("Stream finished unexpectedly: {result:?}"),
-                _ = tokio::time::sleep(Duration::from_secs(3)) => panic!("No stream event"),
+                () = tokio::time::sleep(Duration::from_secs(3)) => panic!("No stream event"),
             }
         }
         task.await.unwrap();

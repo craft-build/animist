@@ -1,3 +1,5 @@
+//! Layered agent runtime: tool registry, linked hook chain, and run loop.
+
 mod config;
 mod error;
 mod layer;
@@ -33,7 +35,8 @@ use tool::{ToolCall, ToolContext, ToolOutput, ToolRegistry, ToolScheduling, Tool
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 
-#[derive(Builder)]
+/// A conversation-scoped agent runtime; see `docs/agents.md`.
+#[derive(Debug, Builder)]
 #[builder(on(_, into))]
 pub struct Agent {
     model: Model,
@@ -56,20 +59,21 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Shared history handle; concurrent edits conflict with active runs.
     pub fn history(&self) -> History {
         self.history.clone()
     }
 
+    /// The agent's serializable execution limits.
     pub fn config(&self) -> &AgentConfig {
         &self.config
     }
 
     /// Startup is lazy and runs once. Shutdown is explicit and terminal.
     pub async fn shutdown(&self) -> Result<()> {
-        let mut closed = self
-            .gate
-            .try_lock()
-            .map_err(|_| AgentError::AlreadyRunning)?;
+        let Ok(mut closed) = self.gate.try_lock() else {
+            return Err(error::AlreadyRunningSnafu.build());
+        };
         if *closed {
             return Ok(());
         }
@@ -82,15 +86,14 @@ impl Agent {
         Ok(())
     }
 
-    /// Cancel through RunOptions and await this future to finalize tool history.
+    /// Cancel through `RunOptions` and await this future to finalize tool history.
     /// Dropping it leaves explicit interrupted results for unfinished tools.
     pub async fn run(&self, input: StoredMessage, options: RunOptions) -> Result<RunReport> {
-        let closed = self
-            .gate
-            .try_lock()
-            .map_err(|_| AgentError::AlreadyRunning)?;
+        let Ok(closed) = self.gate.try_lock() else {
+            return Err(error::AlreadyRunningSnafu.build());
+        };
         if *closed {
-            return Err(AgentError::ShutDown);
+            return Err(error::ShutDownSnafu.build());
         }
         if self.config.max_steps == 0
             || self.config.max_tool_depth == 0
@@ -98,23 +101,23 @@ impl Agent {
             || self.config.max_tool_calls == 0
             || self.config.max_child_calls == 0
         {
-            return Err(AgentError::InvalidLimits);
+            return Err(error::InvalidLimitsSnafu.build());
         }
         let run = RunContext {
             id: self.next_run.fetch_add(1, Ordering::Relaxed),
             cancellation: options.cancellation,
-            stats: Default::default(),
+            stats: std::sync::Arc::default(),
             events: options.events,
             stopped: Mutex::new(None),
-            tool_halt: Default::default(),
-            tool_dispatches: Default::default(),
-            tool_failures: Mutex::new(Vec::new()),
-            interrupted_attempts: Mutex::new(Vec::new()),
+            tool_halt: Cancellation::default(),
+            tool_dispatches: AtomicU64::default(),
+            tool_failures: Mutex::default(),
+            interrupted_attempts: Mutex::default(),
         };
         let result = self.run_inner(input, options.request, &run).await;
         let status = match &result {
             Ok(report) => report.status,
-            Err(AgentError::Cancelled) => RunStatus::Cancelled,
+            Err(AgentError::Cancelled { .. }) => RunStatus::Cancelled,
             Err(AgentError::Stopped { .. }) => RunStatus::Stopped,
             Err(_) => RunStatus::Failed,
         };
@@ -132,7 +135,7 @@ impl Agent {
         })
         .await;
         match result {
-            Err(AgentError::Cancelled) => {
+            Err(AgentError::Cancelled { .. }) => {
                 cleanup?;
                 Ok(RunReport {
                     id: run.id,
@@ -164,7 +167,7 @@ impl Agent {
         run: &RunContext,
     ) -> Result<RunReport> {
         if run.cancellation.is_cancelled() {
-            return Err(AgentError::Cancelled);
+            return Err(error::CancelledSnafu.build());
         }
         self.started
             .get_or_try_init(|| async {
@@ -183,10 +186,11 @@ impl Agent {
             None => input,
         };
         if input.message().role != Role::User {
-            return Err(AgentError::InvalidRole {
+            return Err(error::InvalidRoleSnafu {
                 expected: Role::User,
                 actual: input.message().role.clone(),
-            });
+            }
+            .build());
         }
         if input.message().content.iter().any(|block| {
             matches!(
@@ -194,13 +198,14 @@ impl Agent {
                 ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
             )
         }) {
-            return Err(AgentError::ToolInputMessage);
+            return Err(error::ToolInputMessageSnafu.build());
         }
         if run.cancellation.is_cancelled() {
-            return Err(AgentError::Cancelled);
+            return Err(error::CancelledSnafu.build());
         }
         crate::protocol::validate_replay(std::slice::from_ref(input.message()), &[])?;
         self.history.add_stored(input).await;
+        let system = self.prompt.to_markdown();
         let mut last_response = None;
         let mut retries = 0;
         for step in 0..self.config.max_steps {
@@ -211,7 +216,7 @@ impl Agent {
                 let request = StepRequest::builder()
                     .model(self.model.clone())
                     .messages(messages)
-                    .system(self.prompt.to_markdown())
+                    .system(system.clone())
                     .tools(definitions.clone())
                     .options(options.clone())
                     .build();
@@ -260,10 +265,11 @@ impl Agent {
                 None => response,
             };
             if response.message.role != Role::Assistant {
-                return Err(AgentError::InvalidRole {
+                return Err(error::InvalidRoleSnafu {
                     expected: Role::Assistant,
                     actual: response.message.role,
-                });
+                }
+                .build());
             }
             let mut ids: BTreeSet<_> = expected
                 .entries()
@@ -278,14 +284,14 @@ impl Agent {
             let mut calls = Vec::new();
             for block in &response.message.content {
                 if matches!(block, ContentBlock::ToolResult { .. }) {
-                    return Err(AgentError::AssistantToolResult);
+                    return Err(error::AssistantToolResultSnafu.build());
                 }
                 if let ContentBlock::ToolUse {
                     id, name, input, ..
                 } = block
                 {
                     if id.is_empty() || !ids.insert(id.clone()) {
-                        return Err(AgentError::InvalidToolCallId { id: id.clone() });
+                        return Err(error::InvalidToolCallIdSnafu { id: id.clone() }.build());
                     }
                     calls.push(
                         ToolCall::builder()
@@ -297,7 +303,7 @@ impl Agent {
                 }
             }
             if calls.is_empty() && response.stop_reason == Some(StopReason::ToolUse) {
-                return Err(AgentError::MissingToolCalls);
+                return Err(error::MissingToolCallsSnafu.build());
             }
             let stored = StoredMessage::builder()
                 .timestamp(jiff::Timestamp::now())
@@ -343,9 +349,10 @@ impl Agent {
                 if expected.get(result_index).and_then(HistoryEntry::current)
                     != Some(&result_message)
                 {
-                    return Err(AgentError::HistoryChanged {
+                    return Err(error::HistoryChangedSnafu {
                         messages: vec![result_message],
-                    });
+                    }
+                    .build());
                 }
                 let start = cursor;
                 let mut claims = Vec::new();
@@ -422,7 +429,7 @@ impl Agent {
                         is_error: output.is_error,
                         loaded_tools: output.loaded_tools,
                     };
-                    result_message.message_mut().content = results.clone();
+                    result_message.message_mut().content.clone_from(&results);
                     self.history
                         .compact(ExchangeCommit {
                             expected: expected.clone(),
@@ -504,7 +511,7 @@ impl Agent {
         let failure = loop {
             let event = tokio::select! {
                 biased;
-                _ = run.cancellation.cancelled() => break None,
+                () = run.cancellation.cancelled() => break None,
                 event = exchange.next() => event,
             };
             match event {
@@ -547,7 +554,7 @@ impl Agent {
         run.interrupted_attempts
             .lock()
             .await
-            .push(interrupted.clone());
+            .push(std::sync::Arc::clone(&interrupted));
         run.emit(AgentEvent::AttemptInterrupted {
             run_id: run.id,
             step,
@@ -559,7 +566,7 @@ impl Agent {
                 source,
                 attempt: interrupted,
             }),
-            None => Err(AgentError::Cancelled),
+            None => Err(error::CancelledSnafu.build()),
         }
     }
 
@@ -574,11 +581,11 @@ impl Agent {
     ) -> Result<ToolOutput> {
         tokio::select! {
             biased;
-            _ = run.cancellation.cancelled() => Err(AgentError::Cancelled),
-            _ = run.tool_halt.cancelled() => {
+            () = run.cancellation.cancelled() => Err(error::CancelledSnafu.build()),
+            () = run.tool_halt.cancelled() => {
                 match run.stopped.lock().await.clone() {
-                    Some(reason) => Err(AgentError::Stopped { reason }),
-                    None => Err(AgentError::Cancelled),
+                    Some(reason) => Err(error::StoppedSnafu { reason }.build()),
+                    None => Err(error::CancelledSnafu.build()),
                 }
             }
             result = self.execute_tool_inner(run, call, parent_call_id, depth, visible, scheduling) => result,
@@ -595,13 +602,13 @@ impl Agent {
         scheduling: ToolScheduling,
     ) -> Result<ToolOutput> {
         if depth >= self.config.max_tool_depth {
-            return Err(AgentError::ToolDepthExceeded);
+            return Err(error::ToolDepthExceededSnafu.build());
         }
         if run.cancellation.is_cancelled() {
-            return Err(AgentError::Cancelled);
+            return Err(error::CancelledSnafu.build());
         }
         if let Some(reason) = run.stopped.lock().await.clone() {
-            return Err(AgentError::Stopped { reason });
+            return Err(error::StoppedSnafu { reason }.build());
         }
         if run
             .tool_dispatches
@@ -612,7 +619,7 @@ impl Agent {
             })
             .is_err()
         {
-            return Err(AgentError::ToolCallLimitExceeded);
+            return Err(error::ToolCallLimitExceededSnafu.build());
         }
         let context = ToolContext {
             run,
@@ -622,13 +629,13 @@ impl Agent {
             depth,
             visible,
             scheduling,
-            children: Default::default(),
-            child_gate: Default::default(),
+            children: AtomicU64::default(),
+            child_gate: Mutex::default(),
         };
         let decision = match &self.layers {
             Some(layers) => tokio::select! {
                 biased;
-                _ = run.cancellation.cancelled() => return Err(AgentError::Cancelled),
+                () = run.cancellation.cancelled() => return Err(error::CancelledSnafu.build()),
                 decision = layers.pre_tool_exec(self, &context) => decision?,
             },
             None => ToolDecision::Run,
@@ -637,7 +644,7 @@ impl Agent {
             ToolDecision::Stop { reason } => {
                 *run.stopped.lock().await = Some(reason.clone());
                 run.tool_halt.cancel();
-                return Err(AgentError::Stopped { reason });
+                return Err(error::StoppedSnafu { reason }.build());
             }
             ToolDecision::Deny { reason } => {
                 ToolOutput::builder().content(reason).is_error(true).build()
@@ -660,13 +667,21 @@ impl Agent {
                     .await;
                     let result = tokio::select! {
                         biased;
-                        _ = run.cancellation.cancelled() => return Err(AgentError::Cancelled),
+                        () = run.cancellation.cancelled() => return Err(error::CancelledSnafu.build()),
                         result = async {
                             match self.config.tool_timeout_ms {
-                                Some(ms) => tokio::time::timeout(
+                                Some(ms) => match tokio::time::timeout(
                                     std::time::Duration::from_millis(ms),
-                                    tool.execute(&context, call.input.clone())
-                                ).await.map_err(|_| AgentError::ToolTimeout { name: call.name.clone() }),
+                                    tool.execute(&context, call.input.clone()),
+                                )
+                                .await
+                                {
+                                    Ok(result) => Ok(result),
+                                    Err(_) => Err(error::ToolTimeoutSnafu {
+                                        name: call.name.clone(),
+                                    }
+                                    .build()),
+                                },
                                 None => Ok(tool.execute(&context, call.input.clone()).await),
                             }
                         } => result?,
@@ -681,7 +696,7 @@ impl Agent {
                             let error = std::sync::Arc::new(error);
                             run.tool_failures.lock().await.push(ToolFailure {
                                 call: call.clone(),
-                                error: error.clone(),
+                                error: std::sync::Arc::clone(&error),
                             });
                             run.emit(AgentEvent::ToolFailed {
                                 call: call.clone(),
@@ -695,7 +710,7 @@ impl Agent {
             },
         };
         if let Some(reason) = run.stopped.lock().await.clone() {
-            return Err(AgentError::Stopped { reason });
+            return Err(error::StoppedSnafu { reason }.build());
         }
         let output = match &self.layers {
             Some(layers) => {
@@ -727,7 +742,7 @@ fn validate_tool_subset(
                     && original.input_schema == tool.input_schema
             })
         {
-            return Err(AgentError::ToolDeclarationsChanged);
+            return Err(error::ToolDeclarationsChangedSnafu.build());
         }
     }
     Ok(())
@@ -745,17 +760,18 @@ impl Compactor for ExchangeCommit {
         history: &HistorySnapshot,
     ) -> std::result::Result<CompactionPlan, crate::Error> {
         if history.entries() != self.expected {
-            return Err(AgentError::HistoryChanged {
+            return Err(error::HistoryChangedSnafu {
                 messages: self
                     .edits
                     .iter()
                     .filter_map(|edit| match edit {
                         CompactionEdit::Insert { message, .. }
                         | CompactionEdit::Replace { message, .. } => Some(message.clone()),
-                        _ => None,
+                        CompactionEdit::Remove { .. } => None,
                     })
-                    .collect(),
+                    .collect::<Vec<_>>(),
             }
+            .build()
             .into());
         }
         Ok(CompactionPlan::builder().edits(self.edits.clone()).build())

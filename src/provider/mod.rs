@@ -1,3 +1,5 @@
+//! Provider clients, credentials, model policy, and streaming exchange types.
+
 use arc_handle::arc_handle;
 use async_trait::async_trait;
 
@@ -39,13 +41,29 @@ pub use types::{
     TokenUsage,
 };
 
+/// Result alias for provider operations.
 pub type Result<T> = std::result::Result<T, ProviderError>;
 
+/// Cap on failed-response bodies buffered into errors, in bytes.
+pub(crate) const ERROR_BODY_LIMIT: usize = 64 * 1024;
+
+/// Truncates a failed-response body to `ERROR_BODY_LIMIT` bytes,
+/// backing off to the nearest char boundary.
+pub(crate) fn clamp_error_body(mut body: String) -> String {
+    let mut limit = ERROR_BODY_LIMIT.min(body.len());
+    while !body.is_char_boundary(limit) {
+        limit -= 1;
+    }
+    body.truncate(limit);
+    body
+}
+
+/// Chat completion provider bound to a concrete transport and model policy.
 #[arc_handle]
 #[async_trait]
 pub trait Provider {
     /// Stable provider identifier used for model ownership checks.
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Emits incremental events and returns the assembled response.
     /// Errors return through `Result`; already-emitted events remain available.
@@ -61,6 +79,8 @@ pub trait Provider {
         options: RequestOptions,
     ) -> Result<StreamResponse>;
 
+    /// Lists models the provider currently serves, merging catalog
+    /// metadata where the source omits it.
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
 
     /// Renews expiring credentials held in memory.
@@ -69,6 +89,7 @@ pub trait Provider {
     /// Re-reads credentials from their original source.
     async fn reload_auth(&self) -> Result<()>;
 
+    /// Adjusts a model before first use; the default leaves it unchanged.
     async fn adjust_model(&self, _model: &mut Model) -> Result<()> {
         Ok(())
     }

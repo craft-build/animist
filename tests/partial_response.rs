@@ -1,3 +1,7 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
+use std::fmt::Write as _;
+
 use animist::{
     history::ContentBlock,
     protocol::{
@@ -16,10 +20,11 @@ use tokio::{
 };
 
 fn sse(events: &[Value]) -> String {
-    events
-        .iter()
-        .map(|event| format!("data: {event}\n\n"))
-        .collect()
+    let mut body = String::new();
+    for event in events {
+        write!(body, "data: {event}\n\n").expect("String formatting is infallible");
+    }
+    body
 }
 
 async fn fixture(body: String) -> (reqwest::Response, JoinHandle<()>) {
@@ -95,7 +100,7 @@ async fn cancellation_retains_display_but_not_unsigned_or_unclosed_thinking() {
         .await;
         let partial = exchange.cancel();
         assert_eq!(partial.display_thinking, "visible");
-        assert!(partial.content.is_empty());
+        assert_eq!(partial.content, Vec::new());
         assert_eq!(partial.usage.as_ref().unwrap().input, 12);
         server.await.unwrap();
     }
@@ -162,7 +167,7 @@ async fn cancelling_between_text_fragments_or_dropping_exchange_closes_transport
         if cancel {
             let partial = exchange.cancel();
             assert_eq!(partial.display_text, "first 🦀");
-            assert!(partial.content.is_empty());
+            assert_eq!(partial.content, Vec::new());
             assert!(exchange.next().await.is_none());
         }
         drop(exchange);
@@ -185,7 +190,7 @@ async fn failures_keep_typed_errors_and_latest_usage_without_double_counting_upd
     loop {
         if let Some(ExchangeEvent::Finished(result)) = exchange.next().await {
             assert!(matches!(result, Err(ProviderError::Protocol {
-                source: ProtocolError::Anthropic { source: AnthropicProtocolError::Api { error } }
+                source: ProtocolError::Anthropic { source: AnthropicProtocolError::Api { error, .. } }
             }) if error == payload));
             break;
         }
@@ -244,7 +249,7 @@ async fn responses_preserve_closed_opaque_items_in_output_order_and_failure_usag
     loop {
         if let Some(ExchangeEvent::Finished(result)) = exchange.next().await {
             assert!(matches!(result, Err(ProviderError::Protocol {
-                source: ProtocolError::OpenAI { source: animist::protocol::openai::OpenAIProtocolError::ResponseFailed { error } }
+                source: ProtocolError::OpenAI { source: animist::protocol::openai::OpenAIProtocolError::ResponseFailed { error, .. } }
             }) if error == json!({"code":"failed","opaque":42})));
             break;
         }
@@ -279,6 +284,7 @@ async fn cancelling_next_is_resumable_and_queued_checkpoints_precede_terminal_er
         Err(ProviderError::Http {
             status: 500,
             body: "intact".into(),
+            backtrace: std::backtrace::Backtrace::capture(),
         })
     });
     assert!(matches!(
@@ -299,7 +305,7 @@ async fn cancelling_next_is_resumable_and_queued_checkpoints_precede_terminal_er
         ))
     ));
     assert!(
-        matches!(exchange.next().await, Some(ExchangeEvent::Finished(Err(ProviderError::Http { status:500, body }))) if body == "intact")
+        matches!(exchange.next().await, Some(ExchangeEvent::Finished(Err(ProviderError::Http { status:500, body, .. }))) if body == "intact")
     );
     assert_eq!(exchange.partial().content.len(), 1);
     assert!(exchange.next().await.is_none());
@@ -328,11 +334,12 @@ async fn retention_limits_never_skip_a_block_and_then_retain_later_content() {
         Err(ProviderError::Http {
             status: 500,
             body: String::new(),
+            backtrace: std::backtrace::Backtrace::capture(),
         })
     });
     while !matches!(exchange.next().await, Some(ExchangeEvent::Finished(_))) {}
     assert!(exchange.partial().retention_limited);
-    assert!(exchange.partial().content.is_empty());
+    assert_eq!(exchange.partial().content, Vec::new());
     assert_eq!(exchange.partial().usage.as_ref().unwrap().output, 9);
 }
 
@@ -348,13 +355,13 @@ async fn incomplete_responses_items_block_later_checkpoints_without_masking_upst
     loop {
         if let Some(ExchangeEvent::Finished(result)) = exchange.next().await {
             assert!(matches!(result, Err(ProviderError::Protocol {
-                source: ProtocolError::OpenAI { source: animist::protocol::openai::OpenAIProtocolError::ResponseFailed { error } }
+                source: ProtocolError::OpenAI { source: animist::protocol::openai::OpenAIProtocolError::ResponseFailed { error, .. } }
             }) if error == json!({"opaque":"failure"})));
             break;
         }
     }
     assert_eq!(exchange.partial().display_text, "visible");
-    assert!(exchange.partial().content.is_empty());
+    assert_eq!(exchange.partial().content, Vec::new());
     assert!(exchange.partial().usage.is_none());
     server.await.unwrap();
 }

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(crate)* [**breaking**] backtraces on source-less snafu error variants; snafu `backtrace` feature enabled
+- *(crate)* [**breaking**] re-export `reqwest`, `flume`, and `jiff`; public docs across provider, protocol, agent, history, and catalog surfaces
+- *(crate)* [**breaking**] `[lints]` table enforcing the stylish Rust lint set; MSRV pinned to 1.95
+- *(protocol)* [**breaking**] typed `StreamEvent` dispatch for the Responses assembler and `Display` for `ReplayLocation`
+- *(protocol)* unit tests for replay validation, System One answers, and embeddings assembly
+- *(agent)* [**breaking**] `Debug` for `Agent`, `RunOptions`, `RunContext`, `StepRequest`, `ToolRegistry`, and `Model`
+
+### Changed
+
+- *(provider)* [**breaking**] `Pricing` rates are `Option<f64>`; missing rates stay unknown instead of free
+- *(provider)* [**breaking**] `EmbeddingRequest::dimensions` is `Option<NonZeroU32>`
+- *(provider)* [**breaking**] `Provider::name` returns `&'static str`; failed-response bodies clamp to 64 KiB
+- *(provider)* `Effort::openai_wire` replaces seven duplicated effort-to-wire mappings
+- *(history)* [**breaking**] `History::add` takes `Message` by value; first VCC breadcrumb is excerpted into budget instead of dropped
+- *(catalog)* [**breaking**] model names fall back to the model ID; catalog parsing borrows instead of cloning records
+- *(agent)* [**breaking**] removed dead `AgentError::Provider` and `AgentError::Layer`; system prompt rendered once per run
+
+### Fixed
+
+- *(provider)* OpenAI credential loading preserves `VarError` for non-UTF-8 variables
+- *(agent)* tool timeout path no longer discards the elapsed error through `map_err`
+
 ## [0.4.0](https://github.com/craft-build/animist/compare/v0.3.0...v0.4.0) - 2026-10-27
 
 ### Added

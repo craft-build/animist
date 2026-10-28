@@ -1,7 +1,10 @@
+//! Shared bounded SSE event reader for streaming protocol exchanges.
+
 use std::ops::Range;
 
 use snafu::{ResultExt, Snafu, ensure};
 
+/// SSE framing, UTF-8, and size-limit failures.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum SseError {
@@ -10,11 +13,20 @@ pub enum SseError {
     #[snafu(display("Invalid SSE UTF-8: {source}"))]
     InvalidUtf8 { source: std::str::Utf8Error },
     #[snafu(display("SSE event exceeds {limit} bytes"))]
-    EventTooLarge { limit: usize },
+    EventTooLarge {
+        limit: usize,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("SSE buffer exceeds {limit} bytes"))]
-    BufferTooLarge { limit: usize },
+    BufferTooLarge {
+        limit: usize,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("SSE exchange exceeds {limit} bytes"))]
-    ExchangeTooLarge { limit: usize },
+    ExchangeTooLarge {
+        limit: usize,
+        backtrace: snafu::Backtrace,
+    },
 }
 
 pub(crate) struct Events {
@@ -146,6 +158,8 @@ impl Events {
 
 #[cfg(test)]
 mod tests {
+    #![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
     use super::*;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},

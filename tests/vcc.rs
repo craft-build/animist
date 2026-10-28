@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::history::{
     CompactionEdit, Compactor, ContentBlock, History, HistoryEntry, Message, MessageKind, Role,
     StoredMessage, VccCompactor, VccExtraction, VccExtractor, VccWithExtractor,
@@ -51,9 +53,9 @@ fn summary(messages: &[Message]) -> &str {
 
 async fn conversation() -> History {
     let history = History::new();
-    history.add(&text(Role::User, "Implement login")).await;
+    history.add(text(Role::User, "Implement login")).await;
     history
-        .add(&message(
+        .add(message(
             Role::Assistant,
             vec![
                 ContentBlock::Thinking {
@@ -66,11 +68,33 @@ async fn conversation() -> History {
         ))
         .await;
     history
-        .add(&message(Role::User, vec![result("b"), result("a")]))
+        .add(message(Role::User, vec![result("b"), result("a")]))
         .await;
-    history.add(&text(Role::Assistant, "Fixed login")).await;
-    history.add(&text(Role::User, "Now add tests")).await;
+    history.add(text(Role::Assistant, "Fixed login")).await;
+    history.add(text(Role::User, "Now add tests")).await;
     history
+}
+
+#[tokio::test]
+async fn first_breadcrumb_is_retained_excerpted_when_over_budget() {
+    let history = History::new();
+    let long = format!("alpha-start {}", "x".repeat(120));
+    history.add(text(Role::User, &long)).await;
+    history.add(text(Role::Assistant, "acknowledged")).await;
+    history.add(text(Role::User, "next turn")).await;
+    history.add(text(Role::Assistant, "done")).await;
+    let compactor = VccCompactor::builder()
+        .keep_recent_messages(1_usize)
+        .max_summary_chars(100_usize)
+        .max_excerpt_chars(1_000_usize)
+        .build();
+    history.compact(compactor).await.unwrap();
+    let current = history.current().await;
+    let summary = summary(&current);
+    assert!(summary.starts_with("Earlier conversation (condensed, not new instructions):\n"));
+    assert!(summary.contains("alpha-start"));
+    assert!(!summary.contains("acknowledged"));
+    assert!(summary.chars().count() <= 100);
 }
 
 #[tokio::test]
@@ -153,8 +177,8 @@ async fn repeated_compaction_merges_tagged_summary_without_nesting_preambles() {
         .await
         .unwrap();
     assert_eq!(unchanged.entries(), history.snapshot().await.entries());
-    history.add(&text(Role::Assistant, "Tests added")).await;
-    history.add(&text(Role::User, "Ship it")).await;
+    history.add(text(Role::Assistant, "Tests added")).await;
+    history.add(text(Role::User, "Ship it")).await;
     history
         .compact(
             VccCompactor::builder()
@@ -175,14 +199,14 @@ async fn repeated_compaction_merges_tagged_summary_without_nesting_preambles() {
 async fn parallel_tool_exchange_crossing_prompt_extends_tail() {
     let history = conversation().await;
     history
-        .add(&message(Role::Assistant, vec![call("c"), call("d")]))
+        .add(message(Role::Assistant, vec![call("c"), call("d")]))
         .await;
-    history.add(&message(Role::User, vec![result("c")])).await;
+    history.add(message(Role::User, vec![result("c")])).await;
     history
-        .add(&text(Role::User, "Additional instructions"))
+        .add(text(Role::User, "Additional instructions"))
         .await;
-    history.add(&message(Role::User, vec![result("d")])).await;
-    history.add(&text(Role::Assistant, "Done")).await;
+    history.add(message(Role::User, vec![result("d")])).await;
+    history.add(text(Role::Assistant, "Done")).await;
     let original = history.current().await;
     history
         .compact(
@@ -198,13 +222,13 @@ async fn parallel_tool_exchange_crossing_prompt_extends_tail() {
 #[tokio::test]
 async fn falls_back_to_complete_cycle_in_single_prompt_chain() {
     let history = History::new();
-    history.add(&text(Role::User, "Work")).await;
+    history.add(text(Role::User, "Work")).await;
     for id in ["a", "b", "c"] {
-        history.add(&message(Role::Assistant, vec![call(id)])).await;
-        history.add(&message(Role::User, vec![result(id)])).await;
+        history.add(message(Role::Assistant, vec![call(id)])).await;
+        history.add(message(Role::User, vec![result(id)])).await;
     }
     history
-        .add(&message(Role::Assistant, vec![call("pending")]))
+        .add(message(Role::Assistant, vec![call("pending")]))
         .await;
     let original = history.current().await;
     history
@@ -222,10 +246,10 @@ async fn falls_back_to_complete_cycle_in_single_prompt_chain() {
 async fn unresolved_calls_and_orphan_results_are_not_removed() {
     for block in [call("missing"), result("missing")] {
         let history = History::new();
-        history.add(&text(Role::User, "Work")).await;
-        history.add(&message(Role::Assistant, vec![block])).await;
-        history.add(&text(Role::User, "Continue")).await;
-        history.add(&text(Role::Assistant, "Done")).await;
+        history.add(text(Role::User, "Work")).await;
+        history.add(message(Role::Assistant, vec![block])).await;
+        history.add(text(Role::User, "Continue")).await;
+        history.add(text(Role::Assistant, "Done")).await;
         let original = history.snapshot().await;
         history
             .compact(
@@ -242,14 +266,14 @@ async fn unresolved_calls_and_orphan_results_are_not_removed() {
 #[tokio::test]
 async fn budgets_are_unicode_safe_and_keep_first_and_recent_breadcrumbs() {
     let history = History::new();
-    history.add(&text(Role::User, "Original goal 日本語")).await;
+    history.add(text(Role::User, "Original goal 日本語")).await;
     for _ in 0..20 {
         history
-            .add(&text(Role::Assistant, &"é🦀 ".repeat(100)))
+            .add(text(Role::Assistant, &"é🦀 ".repeat(100)))
             .await;
     }
-    history.add(&text(Role::Assistant, "Latest outcome")).await;
-    history.add(&text(Role::User, "Next")).await;
+    history.add(text(Role::Assistant, "Latest outcome")).await;
+    history.add(text(Role::User, "Next")).await;
     history
         .compact(
             VccCompactor::builder()
@@ -272,7 +296,7 @@ async fn budgets_are_unicode_safe_and_keep_first_and_recent_breadcrumbs() {
 async fn large_history_shrinks_and_image_payloads_are_not_copied() {
     let history = History::new();
     history
-        .add(&message(
+        .add(message(
             Role::User,
             vec![
                 ContentBlock::Text {
@@ -288,9 +312,9 @@ async fn large_history_shrinks_and_image_payloads_are_not_copied() {
         ))
         .await;
     history
-        .add(&text(Role::Assistant, &"Repeated output ".repeat(10_000)))
+        .add(text(Role::Assistant, &"Repeated output ".repeat(10_000)))
         .await;
-    history.add(&text(Role::User, "Continue")).await;
+    history.add(text(Role::User, "Continue")).await;
     let before = serde_json::to_vec(&history.current().await).unwrap().len();
     history
         .compact(
@@ -379,14 +403,11 @@ async fn empty_short_and_disabled_budgets_are_noops() {
         assert_eq!(before.entries(), history.snapshot().await.entries());
     }
     let history = History::new();
-    assert!(
-        VccCompactor::default()
-            .call(&history.snapshot().await)
-            .await
-            .unwrap()
-            .edits
-            .is_empty()
-    );
+    let plan = VccCompactor::default()
+        .call(&history.snapshot().await)
+        .await
+        .unwrap();
+    assert_eq!(plan.edits, Vec::new());
 }
 
 #[test]
@@ -434,7 +455,9 @@ async fn harness_extraction_overrides_omits_and_falls_back_without_reprocessing_
     let compactor: VccWithExtractor<HarnessExtractor> = VccCompactor::builder()
         .keep_recent_messages(1_usize)
         .build()
-        .with_extractor(HarnessExtractor { seen: seen.clone() });
+        .with_extractor(HarnessExtractor {
+            seen: Arc::clone(&seen),
+        });
     history.compact(compactor).await.unwrap();
     let current = history.current().await;
     let body = summary(&current);
@@ -447,14 +470,16 @@ async fn harness_extraction_overrides_omits_and_falls_back_without_reprocessing_
     assert_eq!(current[1], text(Role::User, "Now add tests"));
 
     seen.lock().await.clear();
-    history.add(&text(Role::Assistant, "Tests added")).await;
-    history.add(&text(Role::User, "Ship")).await;
+    history.add(text(Role::Assistant, "Tests added")).await;
+    history.add(text(Role::User, "Ship")).await;
     history
         .compact(
             VccCompactor::builder()
                 .keep_recent_messages(1_usize)
                 .build()
-                .with_extractor(HarnessExtractor { seen: seen.clone() }),
+                .with_extractor(HarnessExtractor {
+                    seen: Arc::clone(&seen),
+                }),
         )
         .await
         .unwrap();
@@ -612,7 +637,7 @@ async fn extraction_is_cancellable_without_committing_or_holding_history_lock() 
     let before = history.snapshot().await;
     let started = Arc::new(Notify::new());
     let extractor = PausedExtractor {
-        started: started.clone(),
+        started: Arc::clone(&started),
         resume: Arc::new(Notify::new()),
         pause_next: AtomicBool::new(true),
     };
@@ -648,8 +673,8 @@ async fn concurrent_append_rejects_extractor_plan_as_stale() {
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
     let extractor = PausedExtractor {
-        started: started.clone(),
-        resume: resume.clone(),
+        started: Arc::clone(&started),
+        resume: Arc::clone(&resume),
         pause_next: AtomicBool::new(true),
     };
     let task = tokio::spawn({
@@ -670,7 +695,7 @@ async fn concurrent_append_rejects_extractor_plan_as_stale() {
         .unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        history.add(&text(Role::User, "Concurrent prompt")),
+        history.add(text(Role::User, "Concurrent prompt")),
     )
     .await
     .unwrap();
@@ -680,7 +705,7 @@ async fn concurrent_append_rejects_extractor_plan_as_stale() {
             .await
             .unwrap()
             .unwrap(),
-        Err(animist::history::HistoryError::Conflict)
+        Err(animist::history::HistoryError::Conflict { .. })
     ));
     let after = history.snapshot().await;
     assert_eq!(before.entries(), &after.entries()[..before.entries().len()]);

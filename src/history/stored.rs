@@ -6,6 +6,7 @@ use bon::Builder;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+/// A message plus storage metadata: timestamp and application tags.
 #[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 #[serde(rename_all = "snake_case")]

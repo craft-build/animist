@@ -30,16 +30,24 @@ impl std::io::Write for RetainedSize {
 /// Partial output is protocol-specific; tool calls still need explicit results.
 #[derive(crate::Struct!)]
 pub struct PartialResponse {
+    /// Retained visible text, truncated at the retention limit.
     pub display_text: String,
+    /// Retained reasoning text, truncated at the retention limit.
     pub display_thinking: String,
+    /// Closed content blocks retained for partial recovery.
     pub content: Vec<ContentBlock>,
+    /// Latest cumulative usage, when any checkpoint arrived.
     pub usage: Option<TokenUsage>,
+    /// True once output was dropped to stay under the retention limit.
     pub retention_limited: bool,
 }
 
+/// Events yielded by an `InferenceExchange` while an attempt streams.
 #[derive(Debug)]
 pub enum ExchangeEvent {
+    /// Forwarded transport event; see `ProviderEvent`.
     Provider(ProviderEvent),
+    /// Final assembled response, or the first provider error.
     Finished(super::Result<StreamResponse>),
 }
 
@@ -50,6 +58,15 @@ pub struct InferenceExchange<'a> {
     partial: PartialResponse,
     retained: usize,
     result: Option<super::Result<StreamResponse>>,
+}
+
+impl std::fmt::Debug for InferenceExchange<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InferenceExchange")
+            .field("partial", &self.partial)
+            .field("retained", &self.retained)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> InferenceExchange<'a> {
@@ -69,6 +86,7 @@ impl<'a> InferenceExchange<'a> {
         }
     }
 
+    /// Snapshot of the output retained so far.
     pub fn partial(&self) -> &PartialResponse {
         &self.partial
     }
@@ -141,7 +159,7 @@ impl<'a> InferenceExchange<'a> {
                 self.partial.retention_limited |= length != text.len();
                 match event {
                     ProviderEvent::TextDelta { .. } => {
-                        self.partial.display_text.push_str(&text[..length])
+                        self.partial.display_text.push_str(&text[..length]);
                     }
                     _ => self.partial.display_thinking.push_str(&text[..length]),
                 }

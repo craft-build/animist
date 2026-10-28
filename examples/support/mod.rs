@@ -14,7 +14,7 @@ use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub))]
-pub enum Error {
+pub(crate) enum Error {
     #[snafu(transparent)]
     Provider {
         source: animist::provider::ProviderError,
@@ -53,7 +53,7 @@ pub enum Error {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Arguments {
+pub(crate) struct Arguments {
     pub model: String,
     pub prompt: String,
     pub thinking: ThinkingConfig,
@@ -65,7 +65,7 @@ pub struct Arguments {
 }
 
 impl Arguments {
-    pub async fn parse(example: &str, default_model: &str) -> Result<Option<Self>, Error> {
+    pub(crate) async fn parse(example: &str, default_model: &str) -> Result<Option<Self>, Error> {
         let values = std::env::args().skip(1).collect::<Vec<_>>();
         if values
             .iter()
@@ -160,7 +160,10 @@ impl Arguments {
     }
 }
 
-pub async fn load_catalog(provider: &str, path: Option<&Path>) -> Result<ProviderCatalog, Error> {
+pub(crate) async fn load_catalog(
+    provider: &str,
+    path: Option<&Path>,
+) -> Result<ProviderCatalog, Error> {
     let mut catalog = match path {
         Some(path) => Catalog::load(path).await?,
         None => Catalog::fetch(&reqwest::Client::new()).await?,
@@ -171,7 +174,11 @@ pub async fn load_catalog(provider: &str, path: Option<&Path>) -> Result<Provide
         .context(MissingProviderSnafu { provider })
 }
 
-pub async fn run(provider: Provider, models: Vec<ModelInfo>, args: Arguments) -> Result<(), Error> {
+pub(crate) async fn run(
+    provider: Provider,
+    models: Vec<ModelInfo>,
+    args: Arguments,
+) -> Result<(), Error> {
     let mut stdout = tokio::io::stdout();
     if args.list_models {
         for info in models {
@@ -300,7 +307,7 @@ pub async fn run(provider: Provider, models: Vec<ModelInfo>, args: Arguments) ->
                         UnexpectedToolSnafu { name }
                     );
                     ensure!(
-                        input.as_object().is_some_and(|object| object.is_empty()),
+                        input.as_object().is_some_and(serde_json::Map::is_empty),
                         InvalidToolInputSnafu {
                             input: input.clone()
                         }

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub use error::AnthropicProtocolError;
 pub use messages::Messages;
 
+/// Thinking control for the Messages wire format.
 #[derive(crate::Enum!, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicThinking {
@@ -18,6 +19,7 @@ pub enum AnthropicThinking {
     Enabled { budget_tokens: u32 },
 }
 
+/// Effort level resolved into Anthropic output configuration.
 #[derive(crate::Enum!, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AnthropicEffort {

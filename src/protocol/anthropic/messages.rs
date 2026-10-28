@@ -6,13 +6,27 @@ use flume::Sender;
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 
-use super::{AnthropicOptions, error::*, types::*};
+use super::AnthropicOptions;
+use super::error::{
+    ApiSnafu, BlockAlreadyStoppedSnafu, ConflictingToolInputSnafu, DecodeEventSnafu,
+    DecodeToolArgumentsSnafu, DeltaTypeMismatchSnafu, EncodeRequestSnafu, EventReceiverSnafu,
+    InvalidMessageStartSnafu, InvalidToolInputSnafu, MissingReplaySignatureSnafu,
+    MissingStopReasonSnafu, MissingThinkingSignatureSnafu, TruncatedStreamSnafu,
+    UnclosedBlocksSnafu, UnexpectedBlockIndexSnafu, UnexpectedEventSnafu, UnknownBlockSnafu,
+    UnsupportedContentSnafu, UnsupportedImageMediaTypeSnafu, UnsupportedLoadedToolsSnafu,
+    UnsupportedStopReasonSnafu,
+};
+use super::types::{
+    BlockDelta, Event, InputBlock, InputMessage, OutputConfig, Request, Speed, StartBlock,
+    ToolDefinition, supported_image,
+};
 use crate::{
     history::{ContentBlock, ImageSource, Message, MessageKind, Role, ToolContent},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
     provider::{ProviderEvent, StopReason, StreamResponse, TokenUsage},
 };
 
+/// Anthropic Messages protocol adapter.
 #[derive(crate::Struct!)]
 pub struct Messages;
 
@@ -89,10 +103,7 @@ impl Protocol for Messages {
                     ContentBlock::Image { source } if message.role == Role::User => {
                         if let ImageSource::Base64 { media_type, .. } = source {
                             ensure!(
-                                matches!(
-                                    media_type.as_str(),
-                                    "image/jpeg" | "image/png" | "image/gif" | "image/webp"
-                                ),
+                                supported_image(media_type),
                                 UnsupportedImageMediaTypeSnafu { media_type }
                             );
                         }
@@ -142,10 +153,7 @@ impl Protocol for Messages {
                             } = part
                             {
                                 ensure!(
-                                    matches!(
-                                        media_type.as_str(),
-                                        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
-                                    ),
+                                    supported_image(media_type),
                                     UnsupportedImageMediaTypeSnafu { media_type }
                                 );
                             }
@@ -157,9 +165,10 @@ impl Protocol for Messages {
                         }
                     }
                     _ => {
-                        return Err(AnthropicProtocolError::UnsupportedContent {
+                        return Err(UnsupportedContentSnafu {
                             role: message.role.clone(),
                         }
+                        .build()
                         .into());
                     }
                 });
@@ -259,8 +268,13 @@ impl Protocol for Messages {
                             event: "content_block_start"
                         }
                     );
+                    #[expect(
+                        clippy::as_conversions,
+                        reason = "wire index is compared against the block count"
+                    )]
+                    let next_block = index as usize;
                     ensure!(
-                        index as usize == blocks.len(),
+                        next_block == blocks.len(),
                         UnexpectedBlockIndexSnafu {
                             index,
                             expected: blocks.len()
@@ -331,6 +345,10 @@ impl Protocol for Messages {
                             event: "content_block_delta"
                         }
                     );
+                    #[expect(
+                        clippy::as_conversions,
+                        reason = "wire index is bounded by the block count"
+                    )]
                     let block = blocks
                         .get_mut(index as usize)
                         .context(UnknownBlockSnafu { index })?;
@@ -371,7 +389,7 @@ impl Protocol for Messages {
                         ) => {
                             if !partial_json.is_empty() {
                                 ensure!(
-                                    input.as_object().is_some_and(|input| input.is_empty()),
+                                    input.as_object().is_some_and(serde_json::Map::is_empty),
                                     ConflictingToolInputSnafu { id: &*id }
                                 );
                                 block
@@ -387,7 +405,7 @@ impl Protocol for Messages {
                                 .await
                                 .context(EventReceiverSnafu)?;
                         }
-                        _ => return Err(AnthropicProtocolError::DeltaTypeMismatch { index }.into()),
+                        _ => return Err(DeltaTypeMismatchSnafu { index }.build().into()),
                     }
                 }
                 Event::ContentBlockStop { index } => {
@@ -397,6 +415,10 @@ impl Protocol for Messages {
                             event: "content_block_stop"
                         }
                     );
+                    #[expect(
+                        clippy::as_conversions,
+                        reason = "wire index is bounded by the block count"
+                    )]
                     let block = blocks
                         .get_mut(index as usize)
                         .context(UnknownBlockSnafu { index })?;
@@ -476,9 +498,7 @@ impl Protocol for Messages {
                         "refusal" => StopReason::Refusal,
                         "model_context_window_exceeded" => StopReason::ContextWindowExceeded,
                         _ => {
-                            return Err(
-                                AnthropicProtocolError::UnsupportedStopReason { reason }.into()
-                            );
+                            return Err(UnsupportedStopReasonSnafu { reason }.build().into());
                         }
                     };
                     return Ok(StreamResponse::builder()
@@ -499,10 +519,10 @@ impl Protocol for Messages {
                         .input_transformations(Vec::new())
                         .build());
                 }
-                Event::Error { error } => return Err(AnthropicProtocolError::Api { error }.into()),
+                Event::Error { error } => return Err(ApiSnafu { error }.build().into()),
                 Event::Ping | Event::Unknown => {}
             }
         }
-        Err(AnthropicProtocolError::TruncatedStream.into())
+        Err(TruncatedStreamSnafu.build().into())
     }
 }

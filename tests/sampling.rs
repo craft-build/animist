@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::{
     protocol::{
         Protocol, ProtocolError, ProtocolInput, SamplingError,
@@ -382,7 +384,7 @@ async fn concrete_providers_forward_supported_controls_and_preserve_upstream_err
         .unwrap()
         .unwrap_err();
         assert!(
-            matches!(error, ProviderError::Http { status: 400, ref body } if body.contains("\"retained\":true")),
+            matches!(error, ProviderError::Http { status: 400, ref body, .. } if body.contains("\"retained\":true")),
             "{name}: {error}"
         );
         let body = server.await.unwrap();

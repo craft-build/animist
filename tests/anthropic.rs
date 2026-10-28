@@ -1,3 +1,7 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
+use std::fmt::Write as _;
+
 use animist::{
     catalog::{CatalogModel, ProviderCatalog},
     history::{ContentBlock, ImageSource, Message, MessageKind, Role},
@@ -94,15 +98,16 @@ fn model(provider: Provider) -> Model {
 }
 
 fn sse(events: Vec<Value>) -> String {
-    events
-        .into_iter()
-        .map(|event| {
-            format!(
-                "event: {}\r\ndata: {event}\r\n\r\n",
-                event["type"].as_str().unwrap()
-            )
-        })
-        .collect()
+    let mut body = String::new();
+    for event in events {
+        write!(
+            body,
+            "event: {}\r\ndata: {event}\r\n\r\n",
+            event["type"].as_str().unwrap()
+        )
+        .expect("String formatting is infallible");
+    }
+    body
 }
 
 fn start() -> Value {
@@ -446,7 +451,9 @@ async fn invalid_provider_policy_fails_before_transport() {
             ThinkingConfig::Off,
             true,
             true,
-            ProviderError::ReasoningRequired,
+            ProviderError::ReasoningRequired {
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             ThinkingConfig::Adaptive,
@@ -454,6 +461,7 @@ async fn invalid_provider_policy_fails_before_transport() {
             false,
             ProviderError::ThinkingUnsupported {
                 model: "custom-model".into(),
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
         (
@@ -463,6 +471,7 @@ async fn invalid_provider_policy_fails_before_transport() {
             ProviderError::InvalidThinkingBudget {
                 budget: 1023,
                 max_tokens: 4096,
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
         (
@@ -472,6 +481,7 @@ async fn invalid_provider_policy_fails_before_transport() {
             ProviderError::InvalidThinkingBudget {
                 budget: 4096,
                 max_tokens: 4096,
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
         (
@@ -480,6 +490,7 @@ async fn invalid_provider_policy_fails_before_transport() {
             false,
             ProviderError::UnsupportedReasoningEffort {
                 effort: Effort::High,
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
         (
@@ -488,6 +499,7 @@ async fn invalid_provider_policy_fails_before_transport() {
             false,
             ProviderError::UnsupportedReasoningEffort {
                 effort: Effort::Minimal,
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
     ] {
@@ -537,7 +549,7 @@ async fn invalid_provider_policy_fails_before_transport() {
                     .build()
             )
             .await,
-        Err(ProviderError::FastModeDisabled)
+        Err(ProviderError::FastModeDisabled { .. })
     ));
     model.provider = Provider::new(
         animist::provider::openai::OpenAi::new(
@@ -556,7 +568,7 @@ async fn invalid_provider_policy_fails_before_transport() {
     ));
     assert!(matches!(
         Anthropic::new(AnthropicConfig::builder().api_key("").build()),
-        Err(ProviderError::EmptyApiKey)
+        Err(ProviderError::EmptyApiKey { .. })
     ));
     let error = Anthropic::new(
         AnthropicConfig::builder()
@@ -643,7 +655,7 @@ async fn paginated_models_reuse_catalog_metadata_and_api_limits() {
     assert_eq!(models.len(), 3);
     assert_eq!(models[0].ids, ["model-a"]);
     assert!(models[0].features.vision);
-    assert_eq!(models[0].pricing.input, 2.0);
+    assert_eq!(models[0].pricing.input, Some(2.0));
     assert_eq!(models[0].config.max_output_tokens, Some(1000));
     assert_eq!(models[0].config.context_window, Some(10000));
     assert_eq!(models[1].ids, ["model-b"]);
@@ -653,10 +665,10 @@ async fn paginated_models_reuse_catalog_metadata_and_api_limits() {
         models[1].features.thinking.efforts,
         [Effort::Low, Effort::XHigh]
     );
-    assert_eq!(models[1].pricing, Default::default());
+    assert_eq!(models[1].pricing, Pricing::default());
     assert!(!models[2].features.thinking.supported);
     assert!(!models[2].features.vision);
-    assert!(models[2].features.thinking.efforts.is_empty());
+    assert_eq!(models[2].features.thinking.efforts, Vec::new());
     let requests = task.await.unwrap();
     assert!(requests[0].0.starts_with("GET /v1/models "));
     assert!(
@@ -691,10 +703,11 @@ async fn model_pagination_rejects_missing_and_repeated_cursors() {
         let error = provider(&url).list_models().await.unwrap_err();
         if repeated {
             assert!(
-                matches!(error, ProviderError::RepeatedModelCursor { cursor } if cursor == "same")
+                matches!(error, ProviderError::RepeatedModelCursor { cursor ,
+                ..} if cursor == "same")
             );
         } else {
-            assert!(matches!(error, ProviderError::MissingModelCursor));
+            assert!(matches!(error, ProviderError::MissingModelCursor { .. }));
         }
         task.await.unwrap();
     }
@@ -743,16 +756,24 @@ async fn all_supported_stop_reasons_remain_distinct() {
 #[tokio::test]
 async fn invalid_stream_transitions_have_specific_protocol_errors() {
     for (tail, expected) in [
-        (vec![], AnthropicProtocolError::TruncatedStream),
+        (
+            vec![],
+            AnthropicProtocolError::TruncatedStream {
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
+        ),
         (
             vec![start()],
             AnthropicProtocolError::UnexpectedEvent {
                 event: "message_start",
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
         (
             vec![json!({"type":"message_stop"})],
-            AnthropicProtocolError::MissingStopReason,
+            AnthropicProtocolError::MissingStopReason {
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             vec![
@@ -761,20 +782,27 @@ async fn invalid_stream_transitions_have_specific_protocol_errors() {
             AnthropicProtocolError::UnexpectedBlockIndex {
                 index: 1,
                 expected: 0,
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
         (
             vec![
                 json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}),
             ],
-            AnthropicProtocolError::UnknownBlock { index: 0 },
+            AnthropicProtocolError::UnknownBlock {
+                index: 0,
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             vec![
                 json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
                 json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"x"}}),
             ],
-            AnthropicProtocolError::DeltaTypeMismatch { index: 0 },
+            AnthropicProtocolError::DeltaTypeMismatch {
+                index: 0,
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             vec![
@@ -782,33 +810,45 @@ async fn invalid_stream_transitions_have_specific_protocol_errors() {
                 json!({"type":"content_block_stop","index":0}),
                 json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}),
             ],
-            AnthropicProtocolError::BlockAlreadyStopped { index: 0 },
+            AnthropicProtocolError::BlockAlreadyStopped {
+                index: 0,
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             vec![
                 json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
                 json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),
             ],
-            AnthropicProtocolError::UnclosedBlocks,
+            AnthropicProtocolError::UnclosedBlocks {
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             vec![
                 json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"plan","signature":""}}),
                 json!({"type":"content_block_stop","index":0}),
             ],
-            AnthropicProtocolError::MissingThinkingSignature { index: 0 },
+            AnthropicProtocolError::MissingThinkingSignature {
+                index: 0,
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             vec![
                 json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"f","input":{"x":1}}}),
                 json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}),
             ],
-            AnthropicProtocolError::ConflictingToolInput { id: "call".into() },
+            AnthropicProtocolError::ConflictingToolInput {
+                id: "call".into(),
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
         ),
         (
             finish("future_reason"),
             AnthropicProtocolError::UnsupportedStopReason {
                 reason: "future_reason".into(),
+                backtrace: std::backtrace::Backtrace::capture(),
             },
         ),
     ] {
@@ -901,7 +941,8 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
         .await
         .unwrap_err();
     assert!(matches!(error, ProviderError::Protocol {
-        source: ProtocolError::Anthropic { source: AnthropicProtocolError::Api { error } }
+        source: ProtocolError::Anthropic { source: AnthropicProtocolError::Api { error ,
+        ..} }
     } if error == payload));
     assert_eq!(
         rx.try_iter()
@@ -915,7 +956,8 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
 
     let (url, task) = server(vec![(401, payload.to_string())]).await;
     assert!(
-        matches!(provider(&url).list_models().await, Err(ProviderError::Http { status: 401, body }) if serde_json::from_str::<Value>(&body).unwrap() == payload)
+        matches!(provider(&url).list_models().await, Err(ProviderError::Http { status: 401, body ,
+        ..}) if serde_json::from_str::<Value>(&body).unwrap() == payload)
     );
     task.await.unwrap();
 
@@ -1003,7 +1045,7 @@ async fn dropping_the_future_cancels_the_http_exchange() {
         tokio::select! {
             event = rx.recv_async() => assert!(matches!(event.unwrap(), ProviderEvent::TextDelta { .. } | ProviderEvent::Usage { .. })),
             result = &mut stream => panic!("Stream finished unexpectedly: {result:?}"),
-            _ = tokio::time::sleep(Duration::from_secs(3)) => panic!("No event received"),
+            () = tokio::time::sleep(Duration::from_secs(3)) => panic!("No event received"),
         }
     }
     task.await.unwrap();

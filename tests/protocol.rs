@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::{
     history::{ContentBlock, Message, MessageKind, Role},
     protocol::{
@@ -198,7 +200,7 @@ fn unsigned_reasoning_is_rejected_instead_of_silently_omitted() {
         assert!(matches!(
             ChatCompletions.request(input, &OpenAiOptions::default()),
             Err(ProtocolError::OpenAI {
-                source: OpenAIProtocolError::ChatReasoningReplayDisabled
+                source: OpenAIProtocolError::ChatReasoningReplayDisabled { .. }
             })
         ));
         for wire_options in [
@@ -210,7 +212,7 @@ fn unsigned_reasoning_is_rejected_instead_of_silently_omitted() {
             assert!(matches!(
                 Responses.request(input, &wire_options),
                 Err(ProtocolError::OpenAI {
-                    source: OpenAIProtocolError::MissingResponsesReasoningItem
+                    source: OpenAIProtocolError::MissingResponsesReasoningItem { .. }
                 })
             ));
         }
@@ -489,7 +491,7 @@ fn responses_replays_complete_opaque_items_and_rejects_cross_protocol_conversion
                     .build()
             ),
             Err(ProtocolError::OpenAI {
-                source: OpenAIProtocolError::UnsupportedChatContent
+                source: OpenAIProtocolError::UnsupportedChatContent { .. }
             })
         ));
     }
@@ -538,13 +540,13 @@ fn redacted_reasoning_is_not_discarded_or_converted_to_text() {
                 .build()
         ),
         Err(ProtocolError::OpenAI {
-            source: OpenAIProtocolError::UnsupportedChatContent
+            source: OpenAIProtocolError::UnsupportedChatContent { .. }
         })
     ));
     assert!(matches!(
         Responses.request(input, &OpenAiOptions::default()),
         Err(ProtocolError::OpenAI {
-            source: OpenAIProtocolError::UnsupportedResponsesContent
+            source: OpenAIProtocolError::UnsupportedResponsesContent { .. }
         })
     ));
     assert_eq!(serde_json::to_value(&messages).unwrap(), before);

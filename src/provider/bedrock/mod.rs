@@ -1,4 +1,4 @@
-//! Bedrock native API routing with AWS credentials and SigV4 authentication.
+//! Bedrock native API routing with AWS credentials and `SigV4` authentication.
 
 mod error;
 
@@ -19,8 +19,9 @@ use snafu::{OptionExt, ResultExt, ensure};
 use tokio::sync::RwLock;
 
 use super::{
-    Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
-    StreamResponse, ThinkingConfig, ThinkingSupport, Tool, error as provider_error,
+    ERROR_BODY_LIMIT, Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl,
+    RequestOptions, Result, StreamResponse, ThinkingConfig, ThinkingSupport, Tool,
+    error as provider_error,
 };
 use crate::protocol::{
     Protocol as ProtocolAdapter, ProtocolInput,
@@ -41,32 +42,43 @@ pub use aws_sigv4::{
 pub use aws_types::{SdkConfig, region::Region};
 pub use error::BedrockError;
 
+/// Wire protocol used for Bedrock chat requests.
 #[derive(crate::Enum!, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
+    /// Bedrock's native Anthropic Messages surface.
     #[default]
     AnthropicMessages,
+    /// Bedrock's `OpenAI` Chat Completions compatibility surface.
     ChatCompletions,
+    /// Bedrock's `OpenAI` Responses compatibility surface.
     Responses,
 }
 
 /// Serializable routing and policy; AWS credentials stay in runtime providers.
-#[derive(crate::StructNoDebug!, Debug, PartialEq, Builder, Serialize, Deserialize)]
+#[derive(crate::StructWithCustomDefault!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct BedrockConfig {
+    /// AWS region; defaults to the SDK-resolved region.
     pub region: Option<String>,
+    /// AWS shared-config profile used for credential discovery.
     pub profile: Option<String>,
     /// Optional runtime origin, including a port for local mocks.
     pub endpoint_url: Option<String>,
+    /// Wire protocol for chat requests.
     #[builder(default)]
     pub protocol: Protocol,
+    /// Output cap when neither request nor catalog sets one.
     #[builder(default = 8192_u32)]
     pub max_output_tokens: u32,
+    /// Sign-and-send attempts for throttled or unavailable responses.
     #[builder(default = 3_u32)]
     pub max_attempts: u32,
+    /// `anthropic-version` header for the native Messages surface.
     #[builder(default = "2023-06-01".to_owned())]
     pub anthropic_version: String,
+    /// `anthropic-beta` features appended to Messages requests.
     #[builder(default)]
     pub anthropic_beta: Vec<String>,
     /// Explicit metadata only; runtime has no OpenAI-compatible model listing.
@@ -79,6 +91,7 @@ impl Default for BedrockConfig {
     }
 }
 
+/// Bedrock provider with AWS `SigV4` request signing.
 pub struct Bedrock {
     config: BedrockConfig,
     client: reqwest::Client,
@@ -88,7 +101,17 @@ pub struct Bedrock {
     managed_credentials: bool,
 }
 
+impl std::fmt::Debug for Bedrock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bedrock")
+            .field("config", &self.config)
+            .field("region", &self.region)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Bedrock {
+    /// Runs AWS credential discovery, then binds the provider to its settings.
     pub async fn new(config: BedrockConfig) -> Result<Self> {
         let mut loader = aws_config::defaults(BehaviorVersion::latest());
         if let Some(profile) = &config.profile {
@@ -249,34 +272,35 @@ impl Bedrock {
                 .and_then(|value| value.parse::<u64>().ok());
             let mut body = Vec::new();
             while let Some(chunk) = response.chunk().await.context(error::TransportSnafu)? {
-                let remaining = (64 * 1024_usize).saturating_sub(body.len());
+                let remaining = ERROR_BODY_LIMIT.saturating_sub(body.len());
                 body.extend_from_slice(&chunk[..remaining.min(chunk.len())]);
                 if chunk.len() > remaining {
-                    return Err(BedrockError::ErrorBodyTooLarge {
+                    return Err(error::ErrorBodyTooLargeSnafu {
                         status,
                         request_id,
                         error_type,
                         body_prefix: body,
-                        limit: 64 * 1024,
+                        limit: ERROR_BODY_LIMIT,
                     }
+                    .build()
                     .into());
                 }
             }
             if matches!(status, 429 | 503) && attempt + 1 < self.config.max_attempts {
-                let delay = retry_after
-                    .map(|seconds| Duration::from_secs(seconds.min(30)))
-                    .unwrap_or_else(|| {
-                        Duration::from_millis((200 * (1_u64 << attempt)).min(30_000))
-                    });
+                let delay = retry_after.map_or_else(
+                    || Duration::from_millis((200 * (1_u64 << attempt)).min(30_000)),
+                    |seconds| Duration::from_secs(seconds.min(30)),
+                );
                 tokio::time::sleep(delay).await;
                 continue;
             }
-            return Err(BedrockError::Http {
+            return Err(error::HttpSnafu {
                 status,
                 request_id,
                 error_type,
                 body,
             }
+            .build()
             .into());
         }
         unreachable!("validated max_attempts is positive")
@@ -285,7 +309,7 @@ impl Bedrock {
 
 #[async_trait]
 impl ProviderImpl for Bedrock {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "amazon-bedrock"
     }
 
@@ -413,25 +437,14 @@ impl ProviderImpl for Bedrock {
                     }
                     ThinkingConfig::Effort(requested) => {
                         ensure!(
-                            supported && model.info.features.thinking.efforts.contains(requested),
+                            supported
+                                && !matches!(requested, Effort::Adaptive)
+                                && model.info.features.thinking.efforts.contains(requested),
                             provider_error::UnsupportedReasoningEffortSnafu {
                                 effort: requested.clone()
                             }
                         );
-                        Some(match requested {
-                            Effort::Minimal => "minimal",
-                            Effort::Low => "low",
-                            Effort::Medium => "medium",
-                            Effort::High => "high",
-                            Effort::XHigh => "xhigh",
-                            Effort::Max => "max",
-                            Effort::Adaptive => {
-                                return provider_error::UnsupportedReasoningEffortSnafu {
-                                    effort: requested.clone(),
-                                }
-                                .fail();
-                            }
-                        })
+                        requested.openai_wire()
                     }
                 };
                 let protocol_options = OpenAiOptions::builder()
@@ -448,7 +461,9 @@ impl ProviderImpl for Bedrock {
                         let response = self.send("/openai/v1/responses", body).await?;
                         Ok(Responses.assemble(response, event_tx).await?)
                     }
-                    Protocol::AnthropicMessages => unreachable!(),
+                    Protocol::AnthropicMessages => {
+                        unreachable!("matched by the outer `Protocol::AnthropicMessages` arm")
+                    }
                 }
             }
         }

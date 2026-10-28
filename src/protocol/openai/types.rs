@@ -1,3 +1,5 @@
+//! `OpenAI` wire types for Chat Completions, Responses, and Embeddings.
+
 use std::collections::BTreeMap;
 
 use bon::Builder;
@@ -283,4 +285,48 @@ impl From<Usage> for TokenUsage {
             .cache_read(cached)
             .build()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type")]
+pub(super) enum StreamEvent {
+    #[serde(rename = "response.output_text.delta")]
+    OutputTextDelta { delta: Option<String> },
+    #[serde(rename = "response.reasoning_summary_text.delta")]
+    ReasoningSummaryTextDelta { delta: Option<String> },
+    #[serde(rename = "response.output_item.added")]
+    OutputItemAdded { item: Option<AddedItem> },
+    #[serde(rename = "response.function_call_arguments.delta")]
+    FunctionCallArgumentsDelta {
+        item_id: Option<String>,
+        delta: Option<String>,
+    },
+    #[serde(rename = "response.output_item.done")]
+    OutputItemDone {
+        output_index: Option<u64>,
+        item: Option<Value>,
+    },
+    #[serde(rename = "response.completed")]
+    Completed { response: Option<Value> },
+    #[serde(rename = "response.incomplete")]
+    Incomplete { response: Option<Value> },
+    #[serde(rename = "response.failed")]
+    Failed { response: Option<Value> },
+    #[serde(rename = "error")]
+    Error,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(crate::Enum!, Deserialize)]
+#[serde(tag = "type")]
+pub(super) enum AddedItem {
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        call_id: Option<String>,
+        id: Option<String>,
+        name: Option<String>,
+    },
+    #[serde(other)]
+    Other,
 }

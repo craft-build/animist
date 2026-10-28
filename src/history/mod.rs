@@ -19,16 +19,27 @@ pub use vcc::{VccCompactor, VccExtraction, VccExtractor, VccWithExtractor};
 
 use crate::Struct;
 
+/// Failures from history transformation and concurrent-mutation conflicts.
 #[derive(Debug, Snafu)]
 pub enum HistoryError {
     #[snafu(display("History changed while the transformation was running"))]
-    Conflict,
+    Conflict { backtrace: snafu::Backtrace },
     #[snafu(display("History entry index {index} is out of bounds for {len} entries"))]
-    InvalidIndex { index: usize, len: usize },
+    InvalidIndex {
+        index: usize,
+        len: usize,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("History entry {index} is inactive"))]
-    InactiveEntry { index: usize },
+    InactiveEntry {
+        index: usize,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("History entry {index} is edited more than once"))]
-    DuplicateEdit { index: usize },
+    DuplicateEdit {
+        index: usize,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("History transformation failed: {source}"))]
     Transformation { source: crate::Error },
 }
@@ -78,6 +89,7 @@ pub struct HistorySnapshot {
 }
 
 impl HistorySnapshot {
+    /// Snapshot entries in order, including inactive ones.
     pub fn entries(&self) -> &[HistoryEntry] {
         &self.entries
     }
@@ -150,6 +162,7 @@ pub struct History {
 }
 
 impl History {
+    /// Empty shared history.
     pub fn new() -> Self {
         Self::default()
     }
@@ -164,6 +177,7 @@ impl History {
         }
     }
 
+    /// Consistent point-in-time view; the returned snapshot never changes.
     pub async fn snapshot(&self) -> HistorySnapshot {
         let state = self.history.read().await;
         HistorySnapshot {
@@ -211,16 +225,18 @@ impl History {
             .collect()
     }
 
-    pub async fn add(&self, message: &Message) {
+    /// Appends one message, timestamped now.
+    pub async fn add(&self, message: Message) {
         self.add_stored(
             StoredMessage::builder()
                 .timestamp(jiff::Timestamp::now())
-                .message(message.clone())
+                .message(message)
                 .build(),
         )
         .await;
     }
 
+    /// Appends one message with caller-owned metadata.
     pub async fn add_stored(&self, message: StoredMessage) {
         let mut state = self.history.write().await;
         state

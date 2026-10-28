@@ -1,7 +1,10 @@
+//! Shared sampling-control validation across protocol boundaries.
+
 use snafu::{Snafu, ensure};
 
 use crate::provider::RequestOptions;
 
+/// Sampling control values rejected by a protocol boundary.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum SamplingError {
@@ -12,28 +15,33 @@ pub enum SamplingError {
         value: f64,
         min: f64,
         max: f64,
+        backtrace: snafu::Backtrace,
     },
     #[snafu(display("{boundary} does not support explicit {control}"))]
     Unsupported {
         boundary: &'static str,
         control: &'static str,
+        backtrace: snafu::Backtrace,
     },
     #[snafu(display("{boundary}: {control} conflicts with {other}"))]
     Conflict {
         boundary: &'static str,
         control: &'static str,
         other: &'static str,
+        backtrace: snafu::Backtrace,
     },
     #[snafu(display("{boundary}: {count} stop sequences exceed the limit {max}"))]
     TooManyStops {
         boundary: &'static str,
         count: usize,
         max: usize,
+        backtrace: snafu::Backtrace,
     },
     #[snafu(display("{boundary}: stop sequence {index} is empty"))]
     EmptyStop {
         boundary: &'static str,
         index: usize,
+        backtrace: snafu::Backtrace,
     },
 }
 

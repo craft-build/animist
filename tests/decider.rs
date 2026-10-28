@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use animist::{
@@ -25,7 +27,7 @@ struct LocalDecider;
 
 #[async_trait::async_trait]
 impl animist::provider::DeciderProviderImpl for LocalDecider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "local"
     }
 
@@ -232,11 +234,13 @@ async fn llama_cpp_routes_typed_decisions_and_preserves_reported_results() {
                     .unwrap(),
             ),
         );
-        let chat = Provider::from_arc(concrete.clone());
-        let decider = DeciderProvider::from_arc(concrete);
+        let cloned = Arc::clone(&concrete);
+        let decider = DeciderProvider::from_arc(cloned);
+        let shared: Arc<dyn animist::provider::ProviderImpl + Send + Sync> = concrete;
+        let chat = Provider::from_arc(shared);
         assert_eq!(
-            Arc::as_ptr(chat.inner()) as *const (),
-            Arc::as_ptr(decider.inner()) as *const ()
+            Arc::as_ptr(chat.inner()).cast::<()>(),
+            Arc::as_ptr(decider.inner()).cast::<()>()
         );
         assert_eq!(decider.name(), "llama-cpp");
         let response = decider.clone().decide(&model(), &request()).await.unwrap();
@@ -249,11 +253,11 @@ async fn llama_cpp_routes_typed_decisions_and_preserves_reported_results() {
         );
         assert!(
             matches!(&response.answers["route"], DecisionAnswer::Choice { choice, probabilities, confidence }
-            if choice == "billing" && probabilities["shipping"] == 0.0001 && *confidence == 0.9997)
+            if choice == "billing" && (probabilities["shipping"] - 0.0001).abs() < 1e-9 && (*confidence - 0.9997).abs() < 1e-9)
         );
         assert!(
             matches!(&response.answers["urgency"], DecisionAnswer::Score { score, legend, probabilities, .. }
-            if *score == 2.0858 && legend[&2] == "today" && probabilities[&2] == 0.6753)
+            if (*score - 2.0858).abs() < 1e-9 && legend[&2] == "today" && (probabilities[&2] - 0.6753).abs() < 1e-9)
         );
         let usage = response.usage.unwrap();
         assert_eq!((usage.input_tokens, usage.output_tokens), (239, 0));
@@ -317,7 +321,7 @@ async fn invalid_requests_fail_before_http() {
         provider.decide(&model(), &empty).await,
         Err(ProviderError::Protocol {
             source: ProtocolError::SystemOne {
-                source: SystemOneError::EmptyQuestions
+                source: SystemOneError::EmptyQuestions { .. }
             }
         })
     ));
@@ -353,7 +357,7 @@ async fn invalid_requests_fail_before_http() {
         provider.decide(&model(), &remote_media).await,
         Err(ProviderError::Protocol {
             source: ProtocolError::SystemOne {
-                source: SystemOneError::InvalidFile { index: 0 }
+                source: SystemOneError::InvalidFile { index: 0, .. }
             }
         })
     ));
@@ -475,7 +479,7 @@ async fn score_levels_are_numeric_and_model_specific_limits_are_not_inferred() {
         .iter()
         .cloned()
         .enumerate()
-        .map(|(index, value)| (index as u32, value))
+        .map(|(index, value)| (u32::try_from(index).expect("index fits u32"), value))
         .collect();
     let probabilities: BTreeMap<u32, f64> = (0..12).map(|index| (index, 1.0 / 12.0)).collect();
     let request = DecisionRequest::builder()
@@ -509,7 +513,7 @@ async fn score_levels_are_numeric_and_model_specific_limits_are_not_inferred() {
         .unwrap();
     assert!(
         matches!(&response.answers["rank"], DecisionAnswer::Score { score, legend, probabilities, .. }
-        if *score == 5.5 && legend[&10] == "level 10" && probabilities.len() == 12)
+        if (*score - 5.5).abs() < 1e-9 && legend[&10] == "level 10" && probabilities.len() == 12)
     );
     task.await.unwrap();
 }
@@ -524,7 +528,8 @@ async fn http_errors_preserve_status_and_body() {
             .await
             .unwrap_err();
         assert!(
-            matches!(error, ProviderError::Http { status: 400 | 501, body: payload } if payload == body)
+            matches!(error, ProviderError::Http { status: 400 | 501, body: payload ,
+            ..} if payload == body)
         );
         task.await.unwrap();
     }

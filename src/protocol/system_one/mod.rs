@@ -14,6 +14,8 @@ use crate::{
 pub use error::SystemOneError;
 use types::{Question, Request, Response};
 
+/// System One decision protocol adapter.
+#[derive(crate::Struct!)]
 pub struct SystemOne;
 
 #[async_trait]

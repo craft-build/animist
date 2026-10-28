@@ -9,16 +9,23 @@ use super::{
     tool::{ToolContext, ToolOutput},
 };
 
+/// Authorization outcome for one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDecision {
+    /// Execute the call through the remaining layers.
     Run,
+    /// Refuse the call; the model receives the reason as an error result.
     Deny { reason: String },
+    /// Terminate the run; unfinished calls close as not executed.
     Stop { reason: String },
 }
 
+/// Layer response to an inference failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recovery {
+    /// Propagate the failure to the caller.
     Propagate,
+    /// Retry inference within the run's retry budget.
     Retry,
 }
 
@@ -26,10 +33,12 @@ pub enum Recovery {
 #[arc_handle]
 #[async_trait]
 pub trait Layer {
+    /// Runs once at first use; failure rolls back initialized nodes.
     async fn startup(&self, _agent: &Agent) -> Result<()> {
         Ok(())
     }
 
+    /// Transforms the submitted input before it is recorded.
     async fn turn_start(
         &self,
         _agent: &Agent,
@@ -39,6 +48,7 @@ pub trait Layer {
         Ok(message.clone())
     }
 
+    /// Transforms each inference request, including retries.
     async fn prepare_request(
         &self,
         _agent: &Agent,
@@ -48,6 +58,7 @@ pub trait Layer {
         Ok(request)
     }
 
+    /// Transforms a fully assembled response before it is recorded.
     async fn response(
         &self,
         _agent: &Agent,
@@ -57,6 +68,7 @@ pub trait Layer {
         Ok(response)
     }
 
+    /// Authorizes one call; denial short-circuits later layers.
     async fn pre_tool_exec(
         &self,
         _agent: &Agent,
@@ -65,6 +77,7 @@ pub trait Layer {
         Ok(ToolDecision::Run)
     }
 
+    /// Transforms the model-visible outcome, including denied calls.
     async fn post_tool_exec(
         &self,
         _agent: &Agent,
@@ -74,6 +87,7 @@ pub trait Layer {
         Ok(output)
     }
 
+    /// Decides whether a failed inference attempt is retried.
     async fn recover(
         &self,
         _agent: &Agent,
@@ -83,20 +97,29 @@ pub trait Layer {
         Ok(Recovery::Propagate)
     }
 
+    /// Observes the terminal status of every admitted run.
     async fn turn_end(&self, _agent: &Agent, _run: &RunContext, _status: RunStatus) -> Result<()> {
         Ok(())
     }
 
+    /// Releases resources; runs once, after the last run completes.
     async fn shutdown(&self, _agent: &Agent) -> Result<()> {
         Ok(())
     }
 }
 
+/// One linked-list node pairing a layer handle with the remaining chain.
 #[derive(Builder)]
 #[builder(on(_, into))]
 pub struct AgentLayer {
     pub layer: Layer,
     pub next: Option<Box<AgentLayer>>,
+}
+
+impl std::fmt::Debug for AgentLayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentLayer").finish_non_exhaustive()
+    }
 }
 
 #[async_trait]
@@ -204,7 +227,7 @@ impl LayerImpl for AgentLayer {
                 Some(next) => next.recover(agent, run, error).await,
                 None => Ok(Recovery::Propagate),
             },
-            recovery => Ok(recovery),
+            Recovery::Retry => Ok(Recovery::Retry),
         }
     }
 

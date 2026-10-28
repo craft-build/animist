@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::{
     history::{
         Alteration, ContentBlock, History, HistoryEntry, ImageSource, Message, MessageKind, Role,
@@ -48,7 +50,7 @@ fn result(content: ToolContents, loaded_tools: Vec<String>) -> Message {
 }
 
 fn request<P: Protocol<Request = Value>>(
-    protocol: P,
+    protocol: &P,
     messages: &[Message],
     options: &P::Options,
 ) -> animist::protocol::Result<Value> {
@@ -85,7 +87,7 @@ fn request<P: Protocol<Request = Value>>(
 #[test]
 fn rich_results_use_native_anthropic_and_responses_wire_content() {
     let messages = [result(rich_content(), vec![])];
-    let anthropic = request(Messages, &messages, &AnthropicOptions::default()).unwrap();
+    let anthropic = request(&Messages, &messages, &AnthropicOptions::default()).unwrap();
     assert_eq!(
         anthropic["messages"][1]["content"][0],
         json!({
@@ -98,7 +100,7 @@ fn rich_results_use_native_anthropic_and_responses_wire_content() {
             ]
         })
     );
-    let responses = request(Responses, &messages, &OpenAiOptions::default()).unwrap();
+    let responses = request(&Responses, &messages, &OpenAiOptions::default()).unwrap();
     assert_eq!(
         responses["input"][1],
         json!({
@@ -111,14 +113,14 @@ fn rich_results_use_native_anthropic_and_responses_wire_content() {
             ]
         })
     );
-    let error: ProviderError = request(ChatCompletions, &messages, &OpenAiOptions::default())
+    let error: ProviderError = request(&ChatCompletions, &messages, &OpenAiOptions::default())
         .unwrap_err()
         .into();
     assert!(matches!(
         error,
         ProviderError::Protocol {
             source: ProtocolError::OpenAI {
-                source: OpenAIProtocolError::UnsupportedChatToolImage { id }
+                source: OpenAIProtocolError::UnsupportedChatToolImage { id, .. }
             }
         } if id == "call-1"
     ));
@@ -136,13 +138,13 @@ fn text_parts_and_empty_results_keep_their_boundaries() {
         .into(),
     ] {
         let messages = [result(content.clone(), vec![])];
-        let anthropic = request(Messages, &messages, &AnthropicOptions::default()).unwrap();
+        let anthropic = request(&Messages, &messages, &AnthropicOptions::default()).unwrap();
         assert_eq!(
             anthropic["messages"][1]["content"][0]["content"],
             serde_json::to_value(&content).unwrap()
         );
-        let chat = request(ChatCompletions, &messages, &OpenAiOptions::default()).unwrap();
-        let responses = request(Responses, &messages, &OpenAiOptions::default()).unwrap();
+        let chat = request(&ChatCompletions, &messages, &OpenAiOptions::default()).unwrap();
+        let responses = request(&Responses, &messages, &OpenAiOptions::default()).unwrap();
         if let [ToolContent::Text { text }] = content.0.as_slice() {
             assert_eq!(chat["messages"][1]["content"], text.as_str());
             assert_eq!(responses["input"][1]["output"], text.as_str());
@@ -163,19 +165,19 @@ fn text_parts_and_empty_results_keep_their_boundaries() {
 fn unsupported_activation_metadata_and_media_are_not_silently_dropped() {
     let messages = [result("loaded".into(), vec!["deferred".into()])];
     assert!(matches!(
-        request(Messages, &messages, &AnthropicOptions::default()),
+        request(&Messages, &messages, &AnthropicOptions::default()),
         Err(ProtocolError::Anthropic {
-            source: AnthropicProtocolError::UnsupportedLoadedTools
+            source: AnthropicProtocolError::UnsupportedLoadedTools { .. }
         })
     ));
     for error in [
-        request(ChatCompletions, &messages, &OpenAiOptions::default()).unwrap_err(),
-        request(Responses, &messages, &OpenAiOptions::default()).unwrap_err(),
+        request(&ChatCompletions, &messages, &OpenAiOptions::default()).unwrap_err(),
+        request(&Responses, &messages, &OpenAiOptions::default()).unwrap_err(),
     ] {
         assert!(matches!(
             error,
             ProtocolError::OpenAI {
-                source: OpenAIProtocolError::UnsupportedLoadedTools { id }
+                source: OpenAIProtocolError::UnsupportedLoadedTools { id, .. }
             } if id == "call-1"
         ));
     }
@@ -187,9 +189,9 @@ fn unsupported_activation_metadata_and_media_are_not_silently_dropped() {
         vec![],
     )];
     assert!(matches!(
-        request(Messages, &messages, &AnthropicOptions::default()),
+        request(&Messages, &messages, &AnthropicOptions::default()),
         Err(ProtocolError::Anthropic {
-            source: AnthropicProtocolError::UnsupportedImageMediaType { media_type }
+            source: AnthropicProtocolError::UnsupportedImageMediaType { media_type, .. }
         }) if media_type == "image/tiff"
     ));
 }
@@ -242,7 +244,7 @@ async fn history_revisions_restore_and_vcc_keeps_rich_sources_and_tail() {
     let history = History::new();
     history
         .add(
-            &Message::builder()
+            Message::builder()
                 .role(Role::Assistant)
                 .kind(MessageKind::Turn)
                 .content(vec![ContentBlock::ToolUse {
@@ -255,7 +257,7 @@ async fn history_revisions_restore_and_vcc_keeps_rich_sources_and_tail() {
         )
         .await;
     let original = result("original".into(), vec![]);
-    history.add(&original).await;
+    history.add(original.clone()).await;
     history.alter(ReviseResult).await.unwrap();
     let revised = result(rich_content(), vec!["retained".into()]);
     assert_eq!(history.unaltered().await[1], original);
@@ -267,7 +269,7 @@ async fn history_revisions_restore_and_vcc_keeps_rich_sources_and_tail() {
             text: "Next".into(),
         }])
         .build();
-    history.add(&tail).await;
+    history.add(tail.clone()).await;
     let saved = serde_json::to_vec(history.snapshot().await.entries()).unwrap();
     let entries: Vec<HistoryEntry> = serde_json::from_slice(&saved).unwrap();
     let restored = History::from_entries(entries.clone());

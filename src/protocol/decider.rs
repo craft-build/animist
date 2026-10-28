@@ -1,3 +1,5 @@
+//! Decision protocol contract independent of chat streaming.
+
 use async_trait::async_trait;
 
 use crate::provider::{DeciderModel, DecisionRequest, DecisionResponse};

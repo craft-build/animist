@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use snafu::Snafu;
 
+/// Failures loading or decoding a models.dev catalog document.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub enum Error {

@@ -1,4 +1,7 @@
 #![cfg(feature = "bedrock")]
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
+use std::fmt::Write as _;
 
 use std::{
     collections::BTreeMap,
@@ -91,7 +94,10 @@ async fn server(replies: Vec<Reply>) -> (String, JoinHandle<Vec<Recorded>>) {
             for reply in replies {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 requests.push(read_request(&mut socket).await);
-                let headers = reply.headers.into_iter().map(|(name, value)| format!("{name}: {value}\r\n")).collect::<String>();
+                let mut headers = String::new();
+                for (name, value) in reply.headers {
+                    write!(headers, "{name}: {value}\r\n").expect("String formatting is infallible");
+                }
                 socket.write_all(format!(
                     "HTTP/1.1 {} Test\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n{headers}\r\n",
                     reply.status, reply.body.len(),
@@ -154,7 +160,12 @@ fn anthropic_text() -> String {
         json!({"type":"content_block_stop","index":0}),
         json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}),
         json!({"type":"message_stop"}),
-    ].into_iter().map(|event| format!("data: {event}\n\n")).collect()
+    ]
+    .into_iter()
+    .fold(String::new(), |mut body, event| {
+        write!(body, "data: {event}\n\n").expect("String formatting is infallible");
+        body
+    })
 }
 
 fn chat_text() -> String {
@@ -279,7 +290,7 @@ fn invalid_settings_fail_without_credential_discovery() {
     assert!(matches!(
         Bedrock::from_sdk_config(BedrockConfig::default(), &SdkConfig::builder().build()),
         Err(ProviderError::Bedrock {
-            source: BedrockError::MissingRegion
+            source: BedrockError::MissingRegion { .. }
         })
     ));
     assert!(matches!(
@@ -290,7 +301,7 @@ fn invalid_settings_fail_without_credential_discovery() {
                 .build()
         ),
         Err(ProviderError::Bedrock {
-            source: BedrockError::MissingCredentialsProvider
+            source: BedrockError::MissingCredentialsProvider { .. }
         })
     ));
     for attempts in [0_u32, 11] {
@@ -317,7 +328,7 @@ fn invalid_settings_fail_without_credential_discovery() {
                 &static_sdk()
             ),
             Err(ProviderError::Bedrock {
-                source: BedrockError::InvalidEndpoint
+                source: BedrockError::InvalidEndpoint { .. }
             })
         ));
     }
@@ -583,7 +594,7 @@ async fn retry_exhaustion_returns_the_last_response_and_stops_at_the_limit() {
             .max_attempts(2_u32)
             .build(),
         &sdk(Rotating {
-            calls: calls.clone(),
+            calls: std::sync::Arc::clone(&calls),
         }),
     )
     .unwrap();
@@ -794,7 +805,7 @@ async fn retries_are_bounded_and_resolve_and_sign_with_current_credentials() {
             .protocol(Protocol::ChatCompletions)
             .build(),
         &sdk(Rotating {
-            calls: calls.clone(),
+            calls: std::sync::Arc::clone(&calls),
         }),
     )
     .unwrap();
@@ -868,7 +879,7 @@ async fn http_errors_preserve_request_ids_types_and_raw_bodies_without_redirects
             .unwrap_err();
         assert!(
             matches!(error, ProviderError::Bedrock { source:BedrockError::Http {
-            status:actual, request_id:Some(id), error_type:Some(kind), body:actual_body,
+            status:actual, request_id:Some(id), error_type:Some(kind), body:actual_body, ..
         }} if actual == status && id == "request-123" && kind == "ExampleException" && actual_body == body)
         );
         assert_eq!(task.await.unwrap().len(), 1);
@@ -901,7 +912,7 @@ async fn stream_failures_do_not_restart_inference_after_events_are_emitted() {
                 .protocol(protocol.clone())
                 .build(),
             &sdk(Rotating {
-                calls: calls.clone(),
+                calls: std::sync::Arc::clone(&calls),
             }),
         )
         .unwrap();
@@ -932,7 +943,7 @@ async fn stream_failures_do_not_restart_inference_after_events_are_emitted() {
                 ProviderError::Protocol {
                     source:
                         ProtocolError::Anthropic {
-                            source: AnthropicProtocolError::Api { error },
+                            source: AnthropicProtocolError::Api { error, .. },
                         },
                 },
             ) => assert_eq!(error["type"], "overloaded_error"),
@@ -956,7 +967,7 @@ async fn model_metadata_listing_is_explicit_and_does_not_resolve_credentials() {
     let provider = Bedrock::from_sdk_config(
         BedrockConfig::builder().catalog(source.clone()).build(),
         &sdk(Rotating {
-            calls: calls.clone(),
+            calls: std::sync::Arc::clone(&calls),
         }),
     )
     .unwrap();
@@ -965,13 +976,13 @@ async fn model_metadata_listing_is_explicit_and_does_not_resolve_credentials() {
         vec![source.models["global.example.model-profile"].info.clone()]
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(
+    assert_eq!(
         Bedrock::from_sdk_config(BedrockConfig::default(), &static_sdk())
             .unwrap()
             .list_models()
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        Vec::new()
     );
 }
 
@@ -984,7 +995,7 @@ async fn unsupported_model_policy_and_cross_protocol_history_fail_before_signing
             .protocol(Protocol::Responses)
             .build(),
         &sdk(Rotating {
-            calls: calls.clone(),
+            calls: std::sync::Arc::clone(&calls),
         }),
     )
     .unwrap();
@@ -1015,9 +1026,9 @@ async fn unsupported_model_policy_and_cross_protocol_history_fail_before_signing
         assert!(matches!(
             error,
             ProviderError::FastModeUnsupported { .. }
-                | ProviderError::ReasoningBudgetUnsupported
+                | ProviderError::ReasoningBudgetUnsupported { .. }
                 | ProviderError::UnsupportedReasoningEffort { .. }
-                | ProviderError::ZeroOutputTokenLimit
+                | ProviderError::ZeroOutputTokenLimit { .. }
         ));
     }
     let mut model = model();
@@ -1026,7 +1037,7 @@ async fn unsupported_model_policy_and_cross_protocol_history_fail_before_signing
         provider
             .stream_message(&model, &messages(), "", &[], &tx, RequestOptions::default())
             .await,
-        Err(ProviderError::ReasoningRequired)
+        Err(ProviderError::ReasoningRequired { .. })
     ));
     model.overrides.thinking = None;
     let history = [Message::builder()
@@ -1043,7 +1054,7 @@ async fn unsupported_model_policy_and_cross_protocol_history_fail_before_signing
             .await,
         Err(ProviderError::Protocol {
             source: ProtocolError::OpenAI {
-                source: OpenAIProtocolError::MissingResponsesReasoningItem,
+                source: OpenAIProtocolError::MissingResponsesReasoningItem { .. },
             }
         })
     ));
@@ -1058,7 +1069,7 @@ async fn mismatched_provider_identity_fails_before_credentials_or_transport() {
             .endpoint_url("http://127.0.0.1:1")
             .build(),
         &sdk(Rotating {
-            calls: calls.clone(),
+            calls: std::sync::Arc::clone(&calls),
         }),
     )
     .unwrap();
@@ -1070,7 +1081,7 @@ async fn mismatched_provider_identity_fails_before_credentials_or_transport() {
     let (tx, rx) = flume::unbounded();
     assert!(matches!(
         provider.stream_message(&model, &messages(), "", &[], &tx, RequestOptions::default()).await,
-        Err(ProviderError::ModelProviderMismatch { expected, actual })
+        Err(ProviderError::ModelProviderMismatch { expected, actual, .. })
             if expected == "amazon-bedrock" && actual == "ollama"
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);

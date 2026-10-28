@@ -1,3 +1,5 @@
+//! Embedding protocol contract independent of chat streaming.
+
 use async_trait::async_trait;
 
 use crate::provider::{EmbeddingModel, EmbeddingRequest, EmbeddingResponse};

@@ -7,7 +7,6 @@ use snafu::ResultExt;
 use crate::provider::{Config, Effort, Features, ModelInfo, Pricing, Thinking, Tier};
 
 use super::{Catalog, CatalogModel, ProviderCatalog, ProviderInfo, Result, error};
-
 #[derive(Deserialize)]
 struct SourceProvider {
     #[serde(flatten)]
@@ -39,13 +38,14 @@ struct Limits {
     output: Option<u32>,
 }
 
+/// Per-million rates; absent fields stay unknown rather than free.
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct Cost {
-    input: f64,
-    output: f64,
-    cache_read: f64,
-    cache_write: f64,
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -64,14 +64,19 @@ pub(super) fn parse(bytes: &[u8]) -> Result<Catalog> {
         let mut models = BTreeMap::new();
         for (model_id, metadata) in provider.models {
             let source: SourceModel =
-                serde_json::from_value(metadata.clone()).context(error::ModelSnafu {
+                SourceModel::deserialize(&metadata).context(error::ModelSnafu {
                     provider: &provider_id,
                     model: &model_id,
                 })?;
+            let name = if source.name.is_empty() {
+                model_id.clone()
+            } else {
+                source.name.clone()
+            };
             models.insert(
                 model_id.clone(),
                 CatalogModel {
-                    name: source.name.clone(),
+                    name,
                     info: source.into_info(model_id),
                     metadata,
                 },
@@ -117,10 +122,10 @@ impl SourceModel {
             .deferred_tools(false)
             .build();
         let pricing = Pricing::builder()
-            .input(cost.input)
-            .output(cost.output)
-            .cache_read(cost.cache_read)
-            .cache_write(cost.cache_write)
+            .maybe_input(cost.input)
+            .maybe_output(cost.output)
+            .maybe_cache_read(cost.cache_read)
+            .maybe_cache_write(cost.cache_write)
             .build();
         let config = Config::builder()
             .maybe_context_window(self.limit.context)

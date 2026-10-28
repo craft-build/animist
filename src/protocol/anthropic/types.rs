@@ -1,3 +1,5 @@
+//! Anthropic Messages wire types and typed stream events.
+
 use bon::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -64,6 +66,14 @@ pub(super) enum InputBlock {
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
+}
+
+/// Anthropic image media types accepted in user messages and tool results.
+pub(super) fn supported_image(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+    )
 }
 
 #[derive(crate::Struct!, Builder, Serialize)]

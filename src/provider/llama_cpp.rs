@@ -9,7 +9,12 @@ use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 use tokio::sync::RwLock;
 
-use super::*;
+use super::{
+    DeciderModel, DeciderProviderImpl, DecisionRequest, DecisionResponse, Effort, EmbeddingModel,
+    EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message, Model, ModelInfo,
+    ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse, ThinkingConfig,
+    ThinkingSupport, Tool, clamp_error_body, error,
+};
 use crate::protocol::{
     DeciderProtocol, EmbeddingProtocol, Protocol, ProtocolInput,
     openai::{ChatCompletions, ChatTokenLimit, OpenAiOptions},
@@ -19,9 +24,12 @@ use crate::protocol::{
 #[derive(crate::StructNoDebug!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
+#[expect(missing_debug_implementations, reason = "credential-bearing type; Debug omitted by policy")]
 pub struct LlamaCppConfig {
+    /// API root prepended to request paths.
     #[builder(default = "http://localhost:9931/v1".to_owned())]
     pub base_url: String,
+    /// Explicit key; `None` reads `api_key_env` or runs unauthenticated.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
     /// Only read when explicitly configured; missing or empty values are errors.
@@ -36,6 +44,11 @@ impl Default for LlamaCppConfig {
     }
 }
 
+/// llama.cpp single-model and router-server provider.
+#[expect(
+    missing_debug_implementations,
+    reason = "credential-bearing type; Debug omitted by policy"
+)]
 pub struct LlamaCpp {
     config: LlamaCppConfig,
     client: reqwest::Client,
@@ -44,6 +57,7 @@ pub struct LlamaCpp {
 }
 
 impl LlamaCpp {
+    /// Resolves credentials and binds the provider to its settings.
     pub fn new(mut config: LlamaCppConfig) -> Result<Self> {
         let from_env = config.api_key.is_none();
         let key = match config.api_key.take() {
@@ -79,6 +93,7 @@ impl LlamaCpp {
     }
 
     /// Replaces the runtime HTTP client without changing serializable settings.
+    #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
@@ -112,7 +127,7 @@ impl LlamaCpp {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.context(error::TransportSnafu)?;
+            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
             return error::HttpSnafu { status, body }.fail();
         }
         Ok(response)
@@ -121,7 +136,7 @@ impl LlamaCpp {
 
 #[async_trait]
 impl ProviderImpl for LlamaCpp {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "llama-cpp"
     }
 
@@ -161,15 +176,7 @@ impl ProviderImpl for LlamaCpp {
             ThinkingConfig::Adaptive => None,
             ThinkingConfig::Effort(Effort::Adaptive) if supported => None,
             ThinkingConfig::Effort(effort) if supported && thinking.efforts.contains(effort) => {
-                Some(match effort {
-                    Effort::Minimal => "minimal",
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                    Effort::XHigh => "xhigh",
-                    Effort::Max => "max",
-                    Effort::Adaptive => unreachable!(),
-                })
+                effort.openai_wire()
             }
             ThinkingConfig::Effort(effort) => {
                 return error::UnsupportedReasoningEffortSnafu {
@@ -183,7 +190,7 @@ impl ProviderImpl for LlamaCpp {
                     error::ThinkingUnsupportedSnafu { model: &model.id }
                 );
                 ensure!(
-                    *tokens <= i32::MAX as u32,
+                    *tokens <= i32::MAX.unsigned_abs(),
                     error::LlamaCppThinkingBudgetOutOfRangeSnafu { budget: *tokens }
                 );
                 budget = Some(*tokens);
@@ -260,7 +267,7 @@ impl ProviderImpl for LlamaCpp {
 
 #[async_trait]
 impl EmbeddingProviderImpl for LlamaCpp {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "llama-cpp"
     }
 
@@ -301,7 +308,7 @@ impl EmbeddingProviderImpl for LlamaCpp {
 
 #[async_trait]
 impl DeciderProviderImpl for LlamaCpp {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "llama-cpp"
     }
 

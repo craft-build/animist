@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use animist::history::{
@@ -56,8 +58,8 @@ async fn revisions_and_originals_survive_deactivation_and_restore() {
         .compact(Plan(vec![CompactionEdit::Remove { index: 0 }]))
         .await
         .unwrap();
-    assert!(history.current().await.is_empty());
-    assert!(history.unaltered().await.is_empty());
+    assert_eq!(history.current().await, Vec::new());
+    assert_eq!(history.unaltered().await, Vec::new());
     assert_eq!(history.verbatim().await, vec![message("original")]);
 
     let snapshot = history.snapshot().await;
@@ -164,7 +166,7 @@ async fn invalid_plans_are_rejected_without_partial_changes() {
                 message: stored("inactive")
             }]))
             .await,
-        Err(HistoryError::InactiveEntry { index: 0 })
+        Err(HistoryError::InactiveEntry { index: 0, .. })
     ));
 }
 
@@ -185,8 +187,8 @@ impl Alteration for FailOnSecond {
 #[tokio::test]
 async fn callback_failure_preserves_source_and_commits_nothing() {
     let history = History::new();
-    history.add(&message("a")).await;
-    history.add(&message("b")).await;
+    history.add(message("a")).await;
+    history.add(message("b")).await;
     let error = history.alter(FailOnSecond).await.unwrap_err();
     let HistoryError::Transformation {
         source: animist::Error::Other { source },
@@ -213,7 +215,7 @@ struct PausedAlteration {
 #[async_trait]
 impl Alteration for PausedAlteration {
     async fn call(&self, current: &StoredMessage) -> Result<Option<StoredMessage>, animist::Error> {
-        assert!(!self.history.current().await.is_empty());
+        assert_ne!(self.history.current().await, Vec::new());
         if current.message() == &message("b") {
             self.entered.notify_one();
             self.resume.notified().await;
@@ -226,14 +228,14 @@ impl Alteration for PausedAlteration {
 async fn alteration_cancellation_and_conflict_discard_earlier_pending_revisions() {
     for cancel in [true, false] {
         let history = History::new();
-        history.add(&message("a")).await;
-        history.add(&message("b")).await;
+        history.add(message("a")).await;
+        history.add(message("b")).await;
         let entered = Arc::new(Notify::new());
         let resume = Arc::new(Notify::new());
         let alteration = PausedAlteration {
             history: history.clone(),
-            entered: entered.clone(),
-            resume: resume.clone(),
+            entered: Arc::clone(&entered),
+            resume: Arc::clone(&resume),
         };
         let task_history = history.clone();
         let task = tokio::spawn(async move { task_history.alter(alteration).await });
@@ -245,11 +247,14 @@ async fn alteration_cancellation_and_conflict_discard_earlier_pending_revisions(
             assert!(task.await.unwrap_err().is_cancelled());
             assert_eq!(history.current().await, vec![message("a"), message("b")]);
         } else {
-            tokio::time::timeout(Duration::from_secs(2), history.add(&message("c")))
+            tokio::time::timeout(Duration::from_secs(2), history.add(message("c")))
                 .await
                 .unwrap();
             resume.notify_one();
-            assert!(matches!(task.await.unwrap(), Err(HistoryError::Conflict)));
+            assert!(matches!(
+                task.await.unwrap(),
+                Err(HistoryError::Conflict { .. })
+            ));
             assert_eq!(
                 history.current().await,
                 vec![message("a"), message("b"), message("c")]
@@ -281,36 +286,39 @@ impl Compactor for PausedCompactor {
 #[tokio::test]
 async fn callbacks_allow_reads_and_appends_and_stale_commits_conflict() {
     let history = History::new();
-    history.add(&message("a")).await;
+    history.add(message("a")).await;
     let entered = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
     let task_history = history.clone();
     let compactor = PausedCompactor {
         history: history.clone(),
-        entered: entered.clone(),
-        resume: resume.clone(),
+        entered: Arc::clone(&entered),
+        resume: Arc::clone(&resume),
     };
     let task = tokio::spawn(async move { task_history.compact(compactor).await });
     tokio::time::timeout(Duration::from_secs(2), entered.notified())
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(2), history.add(&message("b")))
+    tokio::time::timeout(Duration::from_secs(2), history.add(message("b")))
         .await
         .unwrap();
     resume.notify_one();
-    assert!(matches!(task.await.unwrap(), Err(HistoryError::Conflict)));
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(HistoryError::Conflict { .. })
+    ));
     assert_eq!(history.current().await, vec![message("a"), message("b")]);
 }
 
 #[tokio::test]
 async fn cancelling_a_callback_commits_nothing() {
     let history = History::new();
-    history.add(&message("a")).await;
+    history.add(message("a")).await;
     let entered = Arc::new(Notify::new());
     let task_history = history.clone();
     let compactor = PausedCompactor {
         history: history.clone(),
-        entered: entered.clone(),
+        entered: Arc::clone(&entered),
         resume: Arc::new(Notify::new()),
     };
     let task = tokio::spawn(async move { task_history.compact(compactor).await });
@@ -327,7 +335,7 @@ async fn defaults_and_empty_history_insertions_work() {
     let value = serde_json::json!({ "source": stored("a") });
     let entry: HistoryEntry = serde_json::from_value(value).unwrap();
     assert!(entry.is_active());
-    assert!(entry.revisions().is_empty());
+    assert_eq!(entry.revisions(), Vec::new());
     assert_eq!(entry, HistoryEntry::builder().source(stored("a")).build());
     let mut value = serde_json::to_value(stored("a")).unwrap();
     value.as_object_mut().unwrap().remove("tags");
@@ -458,6 +466,10 @@ async fn insert_positions_include_both_boundaries_but_not_beyond_length() {
                 message: stored("invalid"),
             }]))
             .await,
-        Err(HistoryError::InvalidIndex { index: 5, len: 4 })
+        Err(HistoryError::InvalidIndex {
+            index: 5,
+            len: 4,
+            ..
+        })
     ));
 }

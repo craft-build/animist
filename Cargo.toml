@@ -6,6 +6,7 @@ repository = "https://github.com/craft-build/animist"
 authors = ["Jarrett Tierney <akarifur@pm.me>"]
 version = "0.4.0"
 edition = "2024"
+rust-version = "1.95"
 
 [features]
 default = []
@@ -37,13 +38,82 @@ macro_rules_attribute = "0.2"
 reqwest = { version = "0.13", features = ["json", "query"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-snafu = "0.9"
+snafu = { version = "0.9", features = ["backtrace"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 url = { version = "2", optional = true }
 
 [dev-dependencies]
 time = "0.3"
+
+# stylish Rust lints; CI strict with:
+#   cargo clippy --all-targets --all-features -- -D warnings
+# Silence locally with a reason (EXPECT-LINT-WITH-REASON):
+#   #[expect(clippy::unwrap_used, reason = "...")]
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+missing_debug_implementations = "warn"
+# Snafu variants are documented by display strings (NO-SNAFU-VARIANT-DOCS);
+# missing_docs fires on every error variant and wire field, so it stays off.
+missing_docs = "allow"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+unwrap_used = "warn"
+expect_used = "allow"
+panic_in_result_fn = "warn"
+missing_panics_doc = "warn"
+missing_errors_doc = "allow"
+missing_docs_in_private_items = "allow"
+
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+
+fn_params_excessive_bools = "warn"
+struct_excessive_bools = "warn"
+clone_on_ref_ptr = "warn"
+redundant_clone = "warn"
+rc_buffer = "warn"
+new_without_default = "warn"
+len_without_is_empty = "warn"
+should_implement_trait = "warn"
+
+string_add = "warn"
+wildcard_imports = "warn"
+map_err_ignore = "warn"
+
+dbg_macro = "warn"
+todo = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+
+as_conversions = "warn"
+# usize level counts are exact in f64; the one truncation-prone site is exact.
+cast_possible_truncation = "allow"
+# Level-count usize→f64 comparisons are exact at realistic legend sizes.
+cast_precision_loss = "allow"
+cast_sign_loss = "warn"
+
+# Error enums carry mandated snafu backtraces (SNAFU-BACKTRACE), which
+# pushes their size past this lint's budget.
+result_large_err = "allow"
+# arc_handle-generated forwarding code consumes underscore-prefixed params.
+used_underscore_binding = "allow"
+# Assemblers and the run loop intentionally keep per-request state in one fn.
+too_many_lines = "allow"
+# Wire structs mirror vendor field names like `*_tokens`.
+struct_field_names = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+module_inception = "allow"
+enum_glob_use = "allow"
 
 [[example]]
 name = "bedrock"

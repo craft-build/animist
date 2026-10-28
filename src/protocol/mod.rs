@@ -23,10 +23,12 @@ pub use error::ProtocolError;
 pub use replay::{ReplayError, ReplayLocation, validate_replay};
 pub use sampling::SamplingError;
 pub use sse::SseError;
+
+/// Result alias for protocol translation and assembly.
 pub type Result<T> = std::result::Result<T, ProtocolError>;
 
 /// Shared inference input before translation into a protocol's wire format.
-#[derive(Clone, Copy, Builder)]
+#[derive(Clone, Copy, Debug, Builder)]
 #[builder(on(_, into))]
 pub struct ProtocolInput<'a> {
     pub model: &'a Model,
@@ -36,14 +38,18 @@ pub struct ProtocolInput<'a> {
     pub options: &'a RequestOptions,
 }
 
-/// Translates inference input and assembles a transport response.
-/// Implementations keep per-request state in the returned future.
+/// Vendor-neutral adapter contract: implementations translate inference input
+/// into wire requests and assemble streamed responses into history messages.
+/// Per-request stream state lives in the returned future, so dropping it
+/// cancels the exchange; checkpoints are emitted as in-order closed content
+/// prefixes with cumulative usage.
 #[async_trait]
 pub trait Protocol: Send + Sync {
     type Request: Send;
     type Response: Send;
     type Options: Send + Sync;
 
+    /// Translates a validated inference view into this protocol's wire format.
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request>;
 
     /// Emits incremental events; dropping this future cancels stream assembly.

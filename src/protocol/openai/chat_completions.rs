@@ -1,4 +1,4 @@
-//! OpenAI Chat Completions request translation and SSE assembly.
+//! `OpenAI` Chat Completions request translation and SSE assembly.
 
 use std::collections::BTreeMap;
 
@@ -7,13 +7,25 @@ use flume::Sender;
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 
-use super::{ChatReasoningField, ChatTokenLimit, OpenAiOptions, error::*, types::*};
+use super::error::{
+    ApiSnafu, ChatReasoningReplayDisabledSnafu, ChoiceAfterFinishSnafu, DecodeChunkSnafu,
+    DecodeEventSnafu, DecodeToolArgumentsSnafu, EncodeRequestSnafu, EventReceiverSnafu,
+    IncompleteToolIdentitySnafu, MissingFinishReasonSnafu, MultipleChoicesSnafu, RefusalSnafu,
+    ToolArgumentsBeforeIdentitySnafu, TruncatedChatStreamSnafu, UnexpectedFinishReasonSnafu,
+    UnsupportedChatContentSnafu, UnsupportedChatToolImageSnafu, UnsupportedLoadedToolsSnafu,
+};
+use super::types::{
+    ChatAssistantContent, ChatCall, ChatChunk, ChatContent, ChatMessage, ChatRequest, ChatTool,
+    FunctionCall, FunctionDefinition, ImageUrl, ServiceTier, StreamOptions,
+};
+use super::{ChatReasoningField, ChatTokenLimit, OpenAiOptions};
 use crate::{
     history::{ContentBlock, Message, MessageKind, Role, ToolContent},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
     provider::{ProviderEvent, StopReason, StreamResponse, TokenUsage},
 };
 
+/// `OpenAI` Chat Completions protocol adapter.
 #[derive(crate::Struct!)]
 pub struct ChatCompletions;
 
@@ -48,10 +60,22 @@ impl Protocol for ChatCompletions {
                 let mut content = Vec::new();
                 let mut calls = Vec::new();
                 let mut reasoning = String::new();
+                let mut assistant_text = String::new();
+                let mut has_assistant_text = false;
                 for block in segment {
                     match block {
                         ContentBlock::Text { text } => {
-                            content.push(ChatContent::Text { text: text.clone() })
+                            if message.role == Role::Assistant
+                                && matches!(
+                                    options.chat_reasoning_field,
+                                    ChatReasoningField::Reasoning
+                                )
+                            {
+                                assistant_text.push_str(text);
+                                has_assistant_text = true;
+                            } else {
+                                content.push(ChatContent::Text { text: text.clone() });
+                            }
                         }
                         ContentBlock::Image { source } if message.role == Role::User => content
                             .push(ChatContent::ImageUrl {
@@ -80,10 +104,14 @@ impl Protocol for ChatCompletions {
                             );
                             reasoning.push_str(thinking);
                         }
-                        _ => return Err(OpenAIProtocolError::UnsupportedChatContent.into()),
+                        _ => return Err(UnsupportedChatContentSnafu.build().into()),
                     }
                 }
-                if !content.is_empty() || !calls.is_empty() || !reasoning.is_empty() {
+                if !content.is_empty()
+                    || !calls.is_empty()
+                    || !reasoning.is_empty()
+                    || has_assistant_text
+                {
                     messages.push(match message.role {
                         Role::User => ChatMessage::User { content },
                         Role::Assistant => match options.chat_reasoning_field {
@@ -95,17 +123,7 @@ impl Protocol for ChatCompletions {
                                 reasoning: None,
                             },
                             ChatReasoningField::Reasoning => ChatMessage::Assistant {
-                                content: Some(ChatAssistantContent::Text(
-                                    content
-                                        .into_iter()
-                                        .map(|part| match part {
-                                            ChatContent::Text { text } => text,
-                                            ChatContent::ImageUrl { .. } => {
-                                                unreachable!("assistant images are rejected above")
-                                            }
-                                        })
-                                        .collect(),
-                                )),
+                                content: Some(ChatAssistantContent::Text(assistant_text)),
                                 tool_calls: calls,
                                 reasoning_content: None,
                                 reasoning: (!reasoning.is_empty()).then_some(reasoning),
@@ -131,9 +149,10 @@ impl Protocol for ChatCompletions {
                                 parts.push(ChatContent::Text { text: text.clone() });
                             }
                             ToolContent::Image { .. } => {
-                                return Err(OpenAIProtocolError::UnsupportedChatToolImage {
+                                return Err(UnsupportedChatToolImageSnafu {
                                     id: tool_use_id.clone(),
                                 }
+                                .build()
                                 .into());
                             }
                         }
@@ -216,9 +235,10 @@ impl Protocol for ChatCompletions {
             }
             let value: Value = serde_json::from_str(&data).context(DecodeEventSnafu)?;
             if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
-                return Err(OpenAIProtocolError::Api {
+                return Err(ApiSnafu {
                     error: error.clone(),
                 }
+                .build()
                 .into());
             }
             let chunk: ChatChunk = serde_json::from_value(value).context(DecodeChunkSnafu)?;
@@ -318,9 +338,7 @@ impl Protocol for ChatCompletions {
                         "tool_calls" => StopReason::ToolUse,
                         "length" => StopReason::MaxTokens,
                         _ => {
-                            return Err(
-                                OpenAIProtocolError::UnexpectedFinishReason { reason }.into()
-                            );
+                            return Err(UnexpectedFinishReasonSnafu { reason }.build().into());
                         }
                     });
                     if !reasoning.is_empty() {

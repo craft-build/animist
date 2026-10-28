@@ -1,22 +1,29 @@
 use snafu::Snafu;
 
+/// Bedrock-specific configuration, credential, signing, and transport failures.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub enum BedrockError {
     #[snafu(display("AWS region was not configured"))]
-    MissingRegion,
+    MissingRegion { backtrace: snafu::Backtrace },
     #[snafu(display("AWS credential provider was not configured"))]
-    MissingCredentialsProvider,
+    MissingCredentialsProvider { backtrace: snafu::Backtrace },
     #[snafu(display("AWS region {region} cannot be used as an endpoint label"))]
-    InvalidRegion { region: String },
+    InvalidRegion {
+        region: String,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("Bedrock max_attempts must be between 1 and 10, got {attempts}"))]
-    InvalidMaxAttempts { attempts: u32 },
+    InvalidMaxAttempts {
+        attempts: u32,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("Invalid Bedrock endpoint: {source}"))]
     Endpoint { source: url::ParseError },
     #[snafu(display(
         "Bedrock endpoint must be an HTTPS origin (HTTP only on loopback), without credentials, query, or fragment"
     ))]
-    InvalidEndpoint,
+    InvalidEndpoint { backtrace: snafu::Backtrace },
     #[snafu(display("Failed to create Bedrock HTTP client: {source}"))]
     Client { source: reqwest::Error },
     #[snafu(display("Failed to serialize Bedrock request: {source}"))]
@@ -52,6 +59,7 @@ pub enum BedrockError {
         request_id: Option<String>,
         error_type: Option<String>,
         body: Vec<u8>,
+        backtrace: snafu::Backtrace,
     },
     #[snafu(display(
         "Bedrock HTTP {status} error body exceeds {limit} bytes (request ID {request_id:?})"
@@ -62,5 +70,6 @@ pub enum BedrockError {
         error_type: Option<String>,
         body_prefix: Vec<u8>,
         limit: usize,
+        backtrace: snafu::Backtrace,
     },
 }

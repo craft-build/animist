@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use std::time::Duration;
 
 use animist::{
@@ -403,7 +405,7 @@ async fn policy_and_unreplayable_content_fail_before_transport() {
             .stream_message(&required, &[], "", &[], &tx, RequestOptions::default())
             .await
             .unwrap_err(),
-        ProviderError::ReasoningRequired
+        ProviderError::ReasoningRequired { .. }
     ));
     let mut wrong = model();
     wrong.provider = Provider::new(
@@ -443,7 +445,7 @@ async fn policy_and_unreplayable_content_fail_before_transport() {
             .unwrap_err();
         assert!(matches!(
             error,
-            ProviderError::ZeroOutputTokenLimit
+            ProviderError::ZeroOutputTokenLimit { .. }
                 | ProviderError::LlamaCppThinkingBudgetOutOfRange { .. }
         ));
     }
@@ -481,7 +483,7 @@ async fn policy_and_unreplayable_content_fail_before_transport() {
             .unwrap_err(),
         ProviderError::Protocol {
             source: ProtocolError::OpenAI {
-                source: OpenAIProtocolError::UnsupportedChatContent
+                source: OpenAIProtocolError::UnsupportedChatContent { .. }
             },
         }
     ));
@@ -495,7 +497,8 @@ async fn preserves_http_errors_and_rejects_truncated_streams() {
         .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(error, ProviderError::Http { status: 503, body }
+    assert!(matches!(error, ProviderError::Http { status: 503, body ,
+    ..}
         if body.contains("model load failed")));
     task.await.unwrap();
     let (url, task) = server(200, vec!["data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Partial\"},\"finish_reason\":\"stop\"}]}\n\n"]).await;

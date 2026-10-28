@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bon::Builder;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use snafu::{ResultExt, Snafu};
+use snafu::{IntoError, ResultExt, Snafu};
 
 use super::{Agent, Result, RunContext};
 use crate::Struct;
@@ -47,9 +47,18 @@ impl ToolScheduling {
 /// An application may override tool claims without relying on tool-name heuristics.
 #[arc_handle]
 pub trait ToolSchedulingPolicy {
+    /// The effective claim for one call; unknown tools must stay exclusive.
     fn scheduling(&self, call: &ToolCall, declared: ToolScheduling) -> ToolScheduling;
 }
 
+impl std::fmt::Debug for ToolSchedulingPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolSchedulingPolicy")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Typed tool failures surfaced to the model and retained in run reports.
 #[derive(Debug, Snafu)]
 pub enum ToolError {
     #[snafu(display("Invalid tool arguments: {source}"))]
@@ -64,6 +73,7 @@ pub enum ToolError {
     },
 }
 
+/// One admitted model tool call with its decoded JSON arguments.
 #[derive(Struct!, Builder)]
 #[builder(on(_, into))]
 pub struct ToolCall {
@@ -72,6 +82,7 @@ pub struct ToolCall {
     pub input: Value,
 }
 
+/// Model-visible tool output; `is_error` marks correctable failures.
 #[derive(Struct!, Builder)]
 #[builder(on(_, into))]
 pub struct ToolOutput {
@@ -82,7 +93,9 @@ pub struct ToolOutput {
     pub loaded_tools: Vec<String>,
 }
 
+/// Conversion into model-visible output for typed tool results.
 pub trait IntoToolOutput: Send {
+    /// Converts the typed result, failing on invalid output content.
     fn into_tool_output(self) -> std::result::Result<ToolOutput, ToolError>;
 }
 
@@ -98,18 +111,22 @@ impl IntoToolOutput for String {
     }
 }
 
+/// A typed tool: declaration, scheduling claim, and async execution.
 #[async_trait]
 pub trait ToolImpl: Send + Sync + 'static {
     type Args: DeserializeOwned + Send;
     type Output: IntoToolOutput;
     type Error: Error + Send + Sync + 'static;
 
+    /// The frozen declaration advertised to inference.
     fn definition(&self) -> ToolDefinition;
 
+    /// Resource claim for one call; defaults to fully exclusive.
     fn scheduling(&self, _input: &Value) -> ToolScheduling {
         ToolScheduling::Exclusive
     }
 
+    /// Executes one call with decoded arguments; never retried automatically.
     async fn call(
         &self,
         context: &ToolContext<'_>,
@@ -117,15 +134,19 @@ pub trait ToolImpl: Send + Sync + 'static {
     ) -> std::result::Result<Self::Output, Self::Error>;
 }
 
+/// Erased executor pairing a declaration with runtime execution.
 #[arc_handle]
 #[async_trait]
 pub trait ToolExecutor {
+    /// The frozen declaration advertised to inference.
     fn definition(&self) -> ToolDefinition;
 
+    /// Resource claim for one call; defaults to fully exclusive.
     fn scheduling(&self, _input: &Value) -> ToolScheduling {
         ToolScheduling::Exclusive
     }
 
+    /// Executes one call; decoding failures become model-visible errors.
     async fn execute(
         &self,
         context: &ToolContext<'_>,
@@ -154,9 +175,7 @@ impl<T: ToolImpl> ToolExecutorImpl for TypedTool<T> {
         self.0
             .call(context, args)
             .await
-            .map_err(|source| ToolError::Execution {
-                source: Box::new(source),
-            })?
+            .map_err(|source| ExecutionSnafu.into_error(Box::new(source)))?
             .into_tool_output()
     }
 }
@@ -167,26 +186,36 @@ pub struct ToolRegistry {
     tools: BTreeMap<String, (ToolDefinition, ToolExecutor)>,
 }
 
+impl std::fmt::Debug for ToolRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.tools.keys()).finish()
+    }
+}
+
 impl ToolRegistry {
+    /// Registers a typed tool; duplicate or empty names fail.
     pub fn register<T: ToolImpl>(&mut self, tool: T) -> Result<()> {
         self.register_executor(ToolExecutor::new(TypedTool(tool)))
     }
 
+    /// Registers a runtime-named executor under its own declaration.
     pub fn register_executor(&mut self, tool: ToolExecutor) -> Result<()> {
         let definition = tool.definition();
         if definition.name.is_empty() {
-            return Err(super::AgentError::EmptyToolName);
+            return Err(super::error::EmptyToolNameSnafu.build());
         }
         if self.tools.contains_key(&definition.name) {
-            return Err(super::AgentError::DuplicateTool {
+            return Err(super::error::DuplicateToolSnafu {
                 name: definition.name,
-            });
+            }
+            .build());
         }
         self.tools
             .insert(definition.name.clone(), (definition, tool));
         Ok(())
     }
 
+    /// Frozen declarations advertised to inference, in registration order.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|(d, _)| d.clone()).collect()
     }
@@ -197,9 +226,13 @@ impl ToolRegistry {
 }
 
 /// Child calls use the same authorization pipeline and bounded nesting.
+#[derive(Debug)]
 pub struct ToolContext<'a> {
+    /// Run the call belongs to; drives cancellation and statistics.
     pub run: &'a RunContext,
+    /// The admitted call being executed.
     pub call: &'a ToolCall,
+    /// Parent call identity for child dispatches; absent for root calls.
     pub parent_call_id: Option<&'a str>,
     pub(crate) agent: &'a Agent,
     pub(crate) depth: u32,
@@ -213,7 +246,7 @@ impl ToolContext<'_> {
     /// Children inherit the exclusive reservation and execute serially.
     pub async fn dispatch(&self, call: ToolCall) -> Result<ToolOutput> {
         if self.scheduling != ToolScheduling::Exclusive {
-            return Err(super::AgentError::ChildDispatchRequiresExclusive);
+            return Err(super::error::ChildDispatchRequiresExclusiveSnafu.build());
         }
         if self
             .children
@@ -228,7 +261,7 @@ impl ToolContext<'_> {
             )
             .is_err()
         {
-            return Err(super::AgentError::ChildCallLimitExceeded);
+            return Err(super::error::ChildCallLimitExceededSnafu.build());
         }
         let _gate = self
             .run
@@ -247,6 +280,7 @@ impl ToolContext<'_> {
             .await
     }
 
+    /// Emits a progress note for this call; display-only, never persisted.
     pub async fn progress(&self, content: impl Into<String>) {
         self.run
             .emit(super::AgentEvent::ToolProgress {

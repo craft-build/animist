@@ -10,7 +10,10 @@ use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 use tokio::sync::RwLock;
 
-use super::*;
+use super::{
+    Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
+    StreamResponse, ThinkingConfig, ThinkingSupport, Tool, clamp_error_body, error,
+};
 use crate::protocol::{
     Protocol, ProtocolInput,
     anthropic::{AnthropicEffort, AnthropicOptions, AnthropicThinking, Messages},
@@ -20,19 +23,27 @@ use crate::protocol::{
 #[derive(crate::StructNoDebug!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
+#[expect(missing_debug_implementations, reason = "credential-bearing type; Debug omitted by policy")]
 pub struct AnthropicConfig {
+    /// Explicit key; `None` reads `api_key_env` at construction.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
+    /// Environment variable consulted when `api_key` is unset.
     #[builder(default = "ANTHROPIC_API_KEY".to_owned())]
     pub api_key_env: String,
+    /// API root prepended to request paths.
     #[builder(default = "https://api.anthropic.com/v1".to_owned())]
     pub base_url: String,
+    /// `anthropic-version` header sent on every request.
     #[builder(default = "2023-06-01".to_owned())]
     pub version: String,
+    /// `anthropic-beta` features appended to every request.
     #[builder(default)]
     pub beta: Vec<String>,
+    /// Output cap when neither request nor catalog sets one.
     #[builder(default = 4096_u32)]
     pub max_output_tokens: u32,
+    /// Optional metadata; only models returned by Anthropic are listed.
     pub catalog: Option<crate::catalog::ProviderCatalog>,
 }
 
@@ -42,6 +53,11 @@ impl Default for AnthropicConfig {
     }
 }
 
+/// Anthropic Messages provider over an API-key transport.
+#[expect(
+    missing_debug_implementations,
+    reason = "credential-bearing type; Debug omitted by policy"
+)]
 pub struct Anthropic {
     config: AnthropicConfig,
     client: reqwest::Client,
@@ -50,27 +66,24 @@ pub struct Anthropic {
 }
 
 impl Anthropic {
+    /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: AnthropicConfig) -> Result<Self> {
         let from_env = config.api_key.is_none();
-        let key = match config.api_key.take() {
-            Some(key) => {
-                ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
-                key
-            }
-            None => {
-                let key = std::env::var(&config.api_key_env).context(
-                    error::CredentialEnvironmentSnafu {
-                        variable: &config.api_key_env,
-                    },
-                )?;
-                ensure!(
-                    !key.trim().is_empty(),
-                    error::CredentialsSnafu {
-                        variable: &config.api_key_env
-                    }
-                );
-                key
-            }
+        let key = if let Some(key) = config.api_key.take() {
+            ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
+            key
+        } else {
+            let key =
+                std::env::var(&config.api_key_env).context(error::CredentialEnvironmentSnafu {
+                    variable: &config.api_key_env,
+                })?;
+            ensure!(
+                !key.trim().is_empty(),
+                error::CredentialsSnafu {
+                    variable: &config.api_key_env
+                }
+            );
+            key
         };
         Ok(Self {
             config,
@@ -81,6 +94,7 @@ impl Anthropic {
     }
 
     /// Replaces the runtime HTTP client without changing serializable settings.
+    #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
@@ -121,7 +135,7 @@ impl Anthropic {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.context(error::TransportSnafu)?;
+            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
             return error::HttpSnafu { status, body }.fail();
         }
         Ok(response)
@@ -167,7 +181,7 @@ struct EffortCapability {
 
 #[async_trait]
 impl ProviderImpl for Anthropic {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "anthropic"
     }
 

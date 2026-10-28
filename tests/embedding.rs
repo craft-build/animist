@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::{
     protocol::{EmbeddingProtocol, Result as ProtocolResult},
     provider::{
@@ -46,7 +48,7 @@ struct LocalProvider;
 
 #[async_trait]
 impl EmbeddingProviderImpl for LocalProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "local"
     }
 
@@ -126,14 +128,15 @@ fn expected_dimensions_round_trip_and_conflicts_fail_before_translation() {
     assert!(body.get("dimensions").is_none());
     let request = EmbeddingRequest::builder()
         .input(vec!["text".into()])
-        .dimensions(3_u32)
+        .dimensions(std::num::NonZeroU32::new(3).unwrap())
         .build();
     assert!(matches!(
         Embeddings.request(&model, &request),
         Err(ProtocolError::OpenAI {
             source: OpenAIProtocolError::EmbeddingDimensionConflict {
                 expected: 2,
-                requested: 3
+                requested: 3,
+                ..
             }
         })
     ));
@@ -170,19 +173,21 @@ fn local_provider(name: &str, url: &str, authenticated: bool) -> EmbeddingProvid
                 .unwrap()
                 .with_client(client),
             );
-            (
-                Provider::from_arc(concrete.clone()),
-                EmbeddingProvider::from_arc(concrete),
-            )
+            let cloned = std::sync::Arc::clone(&concrete);
+            let embeddings = EmbeddingProvider::from_arc(cloned);
+            let shared: std::sync::Arc<dyn animist::provider::ProviderImpl + Send + Sync> =
+                concrete;
+            (Provider::from_arc(shared), embeddings)
         }
         "ollama" => {
             let concrete = Arc::new(
                 Ollama::new(OllamaConfig::builder().base_url(url).build()).with_client(client),
             );
-            (
-                Provider::from_arc(concrete.clone()),
-                EmbeddingProvider::from_arc(concrete),
-            )
+            let cloned = std::sync::Arc::clone(&concrete);
+            let embeddings = EmbeddingProvider::from_arc(cloned);
+            let shared: std::sync::Arc<dyn animist::provider::ProviderImpl + Send + Sync> =
+                concrete;
+            (Provider::from_arc(shared), embeddings)
         }
         "omlx" => {
             let concrete = Arc::new(
@@ -195,16 +200,17 @@ fn local_provider(name: &str, url: &str, authenticated: bool) -> EmbeddingProvid
                 .unwrap()
                 .with_client(client),
             );
-            (
-                Provider::from_arc(concrete.clone()),
-                EmbeddingProvider::from_arc(concrete),
-            )
+            let cloned = std::sync::Arc::clone(&concrete);
+            let embeddings = EmbeddingProvider::from_arc(cloned);
+            let shared: std::sync::Arc<dyn animist::provider::ProviderImpl + Send + Sync> =
+                concrete;
+            (Provider::from_arc(shared), embeddings)
         }
         _ => panic!("unknown provider {name}"),
     };
     assert_eq!(
-        Arc::as_ptr(chat.inner()) as *const (),
-        Arc::as_ptr(embeddings.inner()) as *const ()
+        Arc::as_ptr(chat.inner()).cast::<()>(),
+        Arc::as_ptr(embeddings.inner()).cast::<()>()
     );
     embeddings
 }
@@ -277,7 +283,9 @@ async fn local_providers_embed_batches_with_shared_clients_and_authentication() 
                     "search_query: unchanged".into(),
                     "search_document: unchanged".into(),
                 ])
-                .maybe_dimensions((name != "llama-cpp").then_some(2_u32))
+                .maybe_dimensions(
+                    (name != "llama-cpp").then(|| std::num::NonZeroU32::new(2).unwrap()),
+                )
                 .build();
             let response = provider.embed(&model, &request).await.unwrap();
             assert_eq!(response.model, model.id);
@@ -298,7 +306,9 @@ async fn local_providers_embed_batches_with_shared_clients_and_authentication() 
             assert!(body.get("expected_dimensions").is_none());
             assert_eq!(
                 body.get("dimensions").cloned(),
-                request.dimensions.map(Value::from)
+                request
+                    .dimensions
+                    .map(|dimensions| Value::from(dimensions.get()))
             );
         }
     }
@@ -350,7 +360,7 @@ async fn local_providers_preserve_http_errors_and_enforce_pinned_response_widths
                 ));
             } else {
                 assert!(
-                    matches!(error, ProviderError::Http {status:503, body} if body.contains("embedding"))
+                    matches!(error, ProviderError::Http {status:503, body, ..} if body.contains("embedding"))
                 );
             }
             task.await.unwrap();
@@ -383,7 +393,7 @@ async fn local_providers_reject_wrong_provider_and_invalid_requests_without_io()
         model.expected_dimensions = NonZeroU32::new(2);
         let request = EmbeddingRequest::builder()
             .input(vec!["text".into()])
-            .dimensions(3_u32)
+            .dimensions(std::num::NonZeroU32::new(3).unwrap())
             .build();
         assert!(matches!(
             provider.embed(&model, &request).await,
@@ -392,7 +402,7 @@ async fn local_providers_reject_wrong_provider_and_invalid_requests_without_io()
         if name == "llama-cpp" {
             let request = EmbeddingRequest::builder()
                 .input(vec!["text".into()])
-                .dimensions(2_u32)
+                .dimensions(std::num::NonZeroU32::new(2).unwrap())
                 .build();
             assert!(matches!(
                 provider.embed(&model, &request).await,

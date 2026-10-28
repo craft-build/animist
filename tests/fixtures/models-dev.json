@@ -43,6 +43,12 @@
         "attachment": true,
         "modalities": {"input": ["text", "pdf"], "output": ["text", "image"]},
         "limit": {"context": 8192, "output": 2048}
+      },
+      "unnamed": {
+        "id": "unnamed",
+        "reasoning": false,
+        "modalities": {"input": ["text"]},
+        "limit": {"context": 1000}
       }
     }
   },

@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use std::{
     collections::VecDeque,
     convert::Infallible,
@@ -39,7 +41,7 @@ struct Script {
 
 #[async_trait]
 impl ProviderImpl for Script {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "script"
     }
 
@@ -102,6 +104,10 @@ fn input() -> StoredMessage {
         .build()
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Reply keeps scripted provider failures uniform"
+)]
 fn response(content: Vec<ContentBlock>, stop: StopReason) -> Reply {
     Ok(StreamResponse::builder()
         .message(message(Role::Assistant, content))
@@ -142,7 +148,7 @@ fn model(replies: Vec<Reply>, hanging: bool, requests: Arc<Mutex<Vec<Vec<Message
 
 fn agent(replies: Vec<Reply>) -> Agent {
     Agent::builder()
-        .model(model(replies, false, Default::default()))
+        .model(model(replies, false, Arc::default()))
         .build()
 }
 
@@ -291,6 +297,7 @@ impl LayerImpl for Trace {
         if self.fail_end {
             Err(AgentError::Stopped {
                 reason: "end failed".into(),
+                backtrace: std::backtrace::Backtrace::capture(),
             })
         } else {
             Ok(())
@@ -356,12 +363,14 @@ async fn run_sampling_controls_reach_request_preparation_on_every_step() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(registry)
         .layers(
             AgentLayer::builder()
-                .layer(Layer::new(CaptureRequestOptions(captured.clone())))
+                .layer(Layer::new(CaptureRequestOptions(std::sync::Arc::clone(
+                    &captured,
+                ))))
                 .build(),
         )
         .build();
@@ -429,7 +438,7 @@ async fn typed_rich_output_survives_events_history_revisions_and_next_request() 
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            requests.clone(),
+            std::sync::Arc::clone(&requests),
         ))
         .tools(tools)
         .build();
@@ -481,7 +490,7 @@ async fn typed_rich_output_survives_events_history_revisions_and_next_request() 
 async fn typed_tools_run_and_request_is_prepared_again() {
     let count = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
-    tools.register(Echo(count.clone())).unwrap();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let agent = Agent::builder()
         .model(model(
@@ -493,7 +502,7 @@ async fn typed_tools_run_and_request_is_prepared_again() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            requests.clone(),
+            std::sync::Arc::clone(&requests),
         ))
         .tools(tools)
         .build();
@@ -577,7 +586,7 @@ async fn restored_history_and_layer_views_are_checked_before_custom_provider_inf
     for corrupt in [false, true] {
         let history = History::new();
         for message in &exchange {
-            history.add(message).await;
+            history.add(message.clone()).await;
         }
         let entries: Vec<HistoryEntry> = serde_json::from_slice(
             &serde_json::to_vec(history.snapshot().await.entries()).unwrap(),
@@ -588,7 +597,7 @@ async fn restored_history_and_layer_views_are_checked_before_custom_provider_inf
             .model(model(
                 vec![response(vec![text("done")], StopReason::EndTurn)],
                 false,
-                requests.clone(),
+                std::sync::Arc::clone(&requests),
             ))
             .history(History::from_entries(entries))
             .layers(
@@ -600,7 +609,8 @@ async fn restored_history_and_layer_views_are_checked_before_custom_provider_inf
         let outcome = agent.run(input(), RunOptions::default()).await;
         if corrupt {
             assert!(matches!(outcome, Err(AgentError::Replay {
-                source: ReplayError::OrphanResult { id, location }
+                source: ReplayError::OrphanResult { id, location ,
+                ..}
             }) if id == "orphan-from-layer" && location == ReplayLocation { message: 3, block: 0 }));
             assert!(requests.lock().await.is_empty());
         } else {
@@ -640,7 +650,7 @@ async fn restored_unresolved_calls_fail_without_inference_or_implicit_repair() {
     let history = History::from_entries(serde_json::from_slice(&saved).unwrap());
     let requests = Arc::new(Mutex::new(Vec::new()));
     let agent = Agent::builder()
-        .model(model(vec![], false, requests.clone()))
+        .model(model(vec![], false, std::sync::Arc::clone(&requests)))
         .history(history)
         .build();
     assert!(matches!(agent.run(input(), RunOptions::default()).await,
@@ -655,11 +665,11 @@ async fn restored_unresolved_calls_fail_without_inference_or_implicit_repair() {
 #[tokio::test]
 async fn linked_layers_forward_turn_end_and_short_circuit_denial() {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mut first = trace("a", log.clone());
+    let mut first = trace("a", std::sync::Arc::clone(&log));
     first.deny = true;
     let count = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
-    tools.register(Echo(count.clone())).unwrap();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![
@@ -670,10 +680,10 @@ async fn linked_layers_forward_turn_end_and_short_circuit_denial() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
-        .layers(layers(first, trace("b", log.clone())))
+        .layers(layers(first, trace("b", std::sync::Arc::clone(&log))))
         .build();
     agent.run(input(), RunOptions::default()).await.unwrap();
     agent.shutdown().await.unwrap();
@@ -687,7 +697,7 @@ async fn linked_layers_forward_turn_end_and_short_circuit_denial() {
     assert!(log.ends_with(&["a:shutdown".into(), "b:shutdown".into()]));
     assert!(matches!(
         agent.run(input(), RunOptions::default()).await,
-        Err(AgentError::ShutDown)
+        Err(AgentError::ShutDown { .. })
     ));
 }
 
@@ -695,7 +705,7 @@ async fn linked_layers_forward_turn_end_and_short_circuit_denial() {
 async fn unknown_and_invalid_tools_become_results_not_run_failures() {
     let count = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
-    tools.register(Echo(count.clone())).unwrap();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![
@@ -709,7 +719,7 @@ async fn unknown_and_invalid_tools_become_results_not_run_failures() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .build();
@@ -744,7 +754,7 @@ async fn cancellation_stops_owned_provider_and_run_gate_rejects_overlap() {
     }
     assert!(matches!(
         agent.run(input(), RunOptions::default()).await,
-        Err(AgentError::AlreadyRunning)
+        Err(AgentError::AlreadyRunning { .. })
     ));
     cancellation.cancel();
     let report = running.await.unwrap();
@@ -761,7 +771,7 @@ fn agent_with_hanging_provider(requests: Arc<Mutex<Vec<Vec<Message>>>>) -> Agent
 #[tokio::test]
 async fn retries_are_bounded_and_reprepare_requests() {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mut retry = trace("retry", log.clone());
+    let mut retry = trace("retry", std::sync::Arc::clone(&log));
     retry.retry = true;
     let requests = Arc::new(Mutex::new(Vec::new()));
     let agent = Agent::builder()
@@ -770,11 +780,12 @@ async fn retries_are_bounded_and_reprepare_requests() {
                 Err(animist::provider::ProviderError::Http {
                     status: 503,
                     body: "busy".into(),
+                    backtrace: std::backtrace::Backtrace::capture(),
                 }),
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            requests.clone(),
+            std::sync::Arc::clone(&requests),
         ))
         .config(AgentConfig::builder().max_retries(1_u32).build())
         .layers(AgentLayer::builder().layer(Layer::new(retry)).build())
@@ -805,7 +816,7 @@ async fn step_limit_preserves_complete_exchange() {
                 StopReason::ToolUse,
             )],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .config(AgentConfig::builder().max_steps(1_u32).build())
         .build();
@@ -833,7 +844,7 @@ async fn terminal_stops_never_execute_tools() {
     ] {
         let count = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::default();
-        tools.register(Echo(count.clone())).unwrap();
+        tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
         let agent = Agent::builder()
             .model(model(
                 vec![response(
@@ -841,7 +852,7 @@ async fn terminal_stops_never_execute_tools() {
                     reason,
                 )],
                 false,
-                Default::default(),
+                Arc::default(),
             ))
             .tools(tools)
             .build();
@@ -860,18 +871,19 @@ async fn terminal_stops_never_execute_tools() {
 #[tokio::test]
 async fn finalization_attempts_every_layer_on_failure() {
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mut first = trace("a", log.clone());
+    let mut first = trace("a", std::sync::Arc::clone(&log));
     first.fail_end = true;
     let agent = Agent::builder()
         .model(model(
             vec![Err(animist::provider::ProviderError::Http {
                 status: 500,
                 body: "failed".into(),
+                backtrace: std::backtrace::Backtrace::capture(),
             })],
             false,
-            Default::default(),
+            Arc::default(),
         ))
-        .layers(layers(first, trace("b", log.clone())))
+        .layers(layers(first, trace("b", std::sync::Arc::clone(&log))))
         .build();
     assert!(matches!(
         agent.run(input(), RunOptions::default()).await,
@@ -905,9 +917,9 @@ fn config_defaults_registration_and_prompt_rendering() {
     let config: AgentConfig = serde_json::from_str("{}").unwrap();
     assert_eq!(config.max_steps, AgentConfig::builder().build().max_steps);
     let mut registry = ToolRegistry::default();
-    registry.register(Echo(Default::default())).unwrap();
+    registry.register(Echo(Arc::default())).unwrap();
     assert!(matches!(
-        registry.register(Echo(Default::default())),
+        registry.register(Echo(Arc::default())),
         Err(AgentError::DuplicateTool { .. })
     ));
     let section = Section::builder()
@@ -982,7 +994,7 @@ async fn child_tools_cannot_bypass_authorization() {
     let count = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
     tools.register(Child).unwrap();
-    tools.register(Echo(count.clone())).unwrap();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![
@@ -993,7 +1005,7 @@ async fn child_tools_cannot_bypass_authorization() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .layers(AgentLayer::builder().layer(Layer::new(DenyEcho)).build())
@@ -1040,7 +1052,7 @@ impl ToolImpl for ScheduledTool {
 
     async fn call(&self, context: &ToolContext<'_>, delay: u64) -> Result<String, Infallible> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-        let _guard = ActiveTool(self.active.clone());
+        let _guard = ActiveTool(std::sync::Arc::clone(&self.active));
         self.peak.fetch_max(active, Ordering::SeqCst);
         context.progress("entered").await;
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
@@ -1085,9 +1097,9 @@ async fn scheduling_bounds_conflicts_and_preserves_model_order() {
         let mut tools = ToolRegistry::default();
         tools
             .register(ScheduledTool {
-                active: active.clone(),
-                peak: peak.clone(),
-                finished: finished.clone(),
+                active: std::sync::Arc::clone(&active),
+                peak: std::sync::Arc::clone(&peak),
+                finished: std::sync::Arc::clone(&finished),
                 claims,
             })
             .unwrap();
@@ -1105,7 +1117,7 @@ async fn scheduling_bounds_conflicts_and_preserves_model_order() {
                     response(vec![text("done")], StopReason::EndTurn),
                 ],
                 false,
-                Default::default(),
+                Arc::default(),
             ))
             .tools(tools)
             .config(AgentConfig::builder().max_concurrent_tools(limit).build())
@@ -1145,7 +1157,7 @@ impl LayerImpl for EditDuringTool {
 #[tokio::test]
 async fn tool_result_commits_reject_edits_during_execution() {
     let mut tools = ToolRegistry::default();
-    tools.register(Echo(Default::default())).unwrap();
+    tools.register(Echo(Arc::default())).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![response(
@@ -1156,7 +1168,7 @@ async fn tool_result_commits_reject_edits_during_execution() {
                 StopReason::ToolUse,
             )],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .tool_scheduling_policy(animist::agent::tool::ToolSchedulingPolicy::new(
@@ -1202,7 +1214,7 @@ async fn hidden_tools_are_unavailable_to_model_and_child_calls() {
     let count = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
     tools.register(Child).unwrap();
-    tools.register(Echo(count.clone())).unwrap();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![
@@ -1216,7 +1228,7 @@ async fn hidden_tools_are_unavailable_to_model_and_child_calls() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .layers(AgentLayer::builder().layer(Layer::new(HideEcho)).build())
@@ -1246,7 +1258,7 @@ async fn nested_dispatch_shares_the_run_budget_without_permit_deadlock() {
         let count = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::default();
         tools.register(Child).unwrap();
-        tools.register(Echo(count.clone())).unwrap();
+        tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
         let agent = Agent::builder()
             .model(model(
                 vec![
@@ -1257,7 +1269,7 @@ async fn nested_dispatch_shares_the_run_budget_without_permit_deadlock() {
                     response(vec![text("done")], StopReason::EndTurn),
                 ],
                 false,
-                Default::default(),
+                Arc::default(),
             ))
             .tools(tools)
             .config(AgentConfig::builder().max_tool_calls(budget).build())
@@ -1269,11 +1281,14 @@ async fn nested_dispatch_shares_the_run_budget_without_permit_deadlock() {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(count.load(Ordering::SeqCst), (budget - 1) as usize);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            usize::try_from(budget - 1).expect("budget fits usize")
+        );
         if budget == 1 {
             assert!(
                 matches!(&*report.tool_failures[0].error, ToolError::Execution { source }
-                if matches!(source.downcast_ref::<AgentError>(), Some(AgentError::ToolCallLimitExceeded)))
+                if matches!(source.downcast_ref::<AgentError>(), Some(AgentError::ToolCallLimitExceeded { .. })))
             );
         }
     }
@@ -1286,9 +1301,9 @@ async fn parallel_cancellation_and_drop_leave_no_tasks_or_orphan_results() {
         let mut tools = ToolRegistry::default();
         tools
             .register(ScheduledTool {
-                active: active.clone(),
-                peak: Default::default(),
-                finished: Default::default(),
+                active: std::sync::Arc::clone(&active),
+                peak: Arc::default(),
+                finished: Arc::default(),
                 claims: animist::agent::tool::ToolScheduling::Resources {
                     reads: vec![],
                     writes: vec![],
@@ -1305,7 +1320,7 @@ async fn parallel_cancellation_and_drop_leave_no_tasks_or_orphan_results() {
                     StopReason::ToolUse,
                 )],
                 false,
-                Default::default(),
+                Arc::default(),
             ))
             .tools(tools)
             .config(AgentConfig::builder().max_concurrent_tools(2_usize).build())
@@ -1354,7 +1369,7 @@ async fn tool_timeout_is_not_retried_and_preserves_pending_results() {
                 StopReason::ToolUse,
             )],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .config(
@@ -1413,10 +1428,10 @@ async fn stop_drops_parallel_siblings_and_does_not_start_later_waves() {
     let mut tools = ToolRegistry::default();
     tools
         .register(ScheduledTool {
-            active: active.clone(),
-            peak: Default::default(),
-            finished: Default::default(),
-            claims: Default::default(),
+            active: std::sync::Arc::clone(&active),
+            peak: Arc::default(),
+            finished: Arc::default(),
+            claims: animist::agent::tool::ToolScheduling::default(),
         })
         .unwrap();
     let agent = Agent::builder()
@@ -1430,7 +1445,7 @@ async fn stop_drops_parallel_siblings_and_does_not_start_later_waves() {
                 StopReason::ToolUse,
             )],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .config(AgentConfig::builder().max_concurrent_tools(2_usize).build())
@@ -1486,7 +1501,7 @@ async fn child_fanout_is_bounded_and_nonexclusive_parents_cannot_dispatch() {
         let count = Arc::new(AtomicUsize::new(0));
         let mut tools = ToolRegistry::default();
         tools.register(FanOut).unwrap();
-        tools.register(Echo(count.clone())).unwrap();
+        tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
         let agent = Agent::builder()
             .model(model(
                 vec![
@@ -1497,7 +1512,7 @@ async fn child_fanout_is_bounded_and_nonexclusive_parents_cannot_dispatch() {
                     response(vec![text("done")], StopReason::EndTurn),
                 ],
                 false,
-                Default::default(),
+                Arc::default(),
             ))
             .tools(tools)
             .config(AgentConfig::builder().max_child_calls(1_u64).build())
@@ -1511,8 +1526,8 @@ async fn child_fanout_is_bounded_and_nonexclusive_parents_cannot_dispatch() {
         assert!(
             matches!(&*report.tool_failures[0].error, ToolError::Execution { source }
             if matches!((nonexclusive, source.downcast_ref::<AgentError>()),
-                (true, Some(AgentError::ChildDispatchRequiresExclusive)) |
-                (false, Some(AgentError::ChildCallLimitExceeded))))
+                (true, Some(AgentError::ChildDispatchRequiresExclusive { .. })) |
+                (false, Some(AgentError::ChildCallLimitExceeded { .. }))))
         );
     }
 }
@@ -1552,7 +1567,7 @@ async fn dropping_tool_execution_leaves_replay_safe_interrupted_results() {
                 StopReason::ToolUse,
             )],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .build();
@@ -1584,7 +1599,7 @@ async fn cooperative_tool_cancellation_closes_every_call() {
                 StopReason::ToolUse,
             )],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .build();
@@ -1628,11 +1643,11 @@ async fn startup_runs_once_across_runs_and_shutdown_is_idempotent() {
                 response(vec![text("second")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .layers(
             AgentLayer::builder()
-                .layer(Layer::new(trace("a", log.clone())))
+                .layer(Layer::new(trace("a", std::sync::Arc::clone(&log))))
                 .build(),
         )
         .build();
@@ -1649,7 +1664,7 @@ async fn startup_runs_once_across_runs_and_shutdown_is_idempotent() {
 
 #[tokio::test]
 async fn retry_budget_exhaustion_preserves_provider_error() {
-    let mut retry = trace("retry", Default::default());
+    let mut retry = trace("retry", Arc::default());
     retry.retry = true;
     let requests = Arc::new(Mutex::new(Vec::new()));
     let agent = Agent::builder()
@@ -1658,14 +1673,16 @@ async fn retry_budget_exhaustion_preserves_provider_error() {
                 Err(animist::provider::ProviderError::Http {
                     status: 503,
                     body: "first".into(),
+                    backtrace: std::backtrace::Backtrace::capture(),
                 }),
                 Err(animist::provider::ProviderError::Http {
                     status: 503,
                     body: "second".into(),
+                    backtrace: std::backtrace::Backtrace::capture(),
                 }),
             ],
             false,
-            requests.clone(),
+            std::sync::Arc::clone(&requests),
         ))
         .config(AgentConfig::builder().max_retries(1_u32).build())
         .layers(AgentLayer::builder().layer(Layer::new(retry)).build())
@@ -1684,6 +1701,7 @@ fn partial_attempt_model(hanging: bool, requests: Arc<Mutex<Vec<Vec<Message>>>>)
                     Err(animist::provider::ProviderError::Http {
                         status: 503,
                         body: "original failure".into(),
+                        backtrace: std::backtrace::Backtrace::capture(),
                     }),
                     response(vec![text("recovered")], StopReason::EndTurn),
                 ]
@@ -1722,11 +1740,16 @@ async fn recovered_partial_attempts_keep_identity_and_usage_without_replaying_or
     let requests = Arc::new(Mutex::new(Vec::new()));
     let executions = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
-    tools.register(Echo(executions.clone())).unwrap();
-    let mut retry = trace("retry", Default::default());
+    tools
+        .register(Echo(std::sync::Arc::clone(&executions)))
+        .unwrap();
+    let mut retry = trace("retry", Arc::default());
     retry.retry = true;
     let agent = Agent::builder()
-        .model(partial_attempt_model(false, requests.clone()))
+        .model(partial_attempt_model(
+            false,
+            std::sync::Arc::clone(&requests),
+        ))
         .config(AgentConfig::builder().max_retries(1_u32).build())
         .tools(tools)
         .layers(AgentLayer::builder().layer(Layer::new(retry)).build())
@@ -1770,7 +1793,7 @@ async fn recovered_partial_attempts_keep_identity_and_usage_without_replaying_or
 #[tokio::test]
 async fn cooperative_inference_cancellation_returns_partial_attempt_without_committing_it() {
     let agent = Agent::builder()
-        .model(partial_attempt_model(true, Default::default()))
+        .model(partial_attempt_model(true, Arc::default()))
         .build();
     let cancellation = Cancellation::default();
     let (tx, rx) = flume::unbounded();
@@ -1845,7 +1868,7 @@ impl LayerImpl for EditHistory {
 async fn stale_exchange_does_not_execute_tools_or_overwrite_external_edits() {
     let count = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
-    tools.register(Echo(count.clone())).unwrap();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![response(
@@ -1853,7 +1876,7 @@ async fn stale_exchange_does_not_execute_tools_or_overwrite_external_edits() {
                 StopReason::ToolUse,
             )],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .layers(AgentLayer::builder().layer(Layer::new(EditHistory)).build())
@@ -1869,7 +1892,7 @@ async fn stale_exchange_does_not_execute_tools_or_overwrite_external_edits() {
 #[tokio::test]
 async fn argument_error_retains_structured_source_in_events() {
     let mut tools = ToolRegistry::default();
-    tools.register(Echo(Default::default())).unwrap();
+    tools.register(Echo(Arc::default())).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![
@@ -1880,7 +1903,7 @@ async fn argument_error_retains_structured_source_in_events() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .build();
@@ -1942,7 +1965,7 @@ async fn transformations_compose_without_persisting_request_only_context() {
         .model(model(
             vec![response(vec![text("done")], StopReason::EndTurn)],
             false,
-            requests.clone(),
+            std::sync::Arc::clone(&requests),
         ))
         .layers(
             AgentLayer::builder()
@@ -1991,7 +2014,7 @@ async fn cancellation_releases_event_backpressure() {
     tokio::pin!(running);
     tokio::select! {
         result = &mut running => panic!("unexpected result: {result:?}"),
-        _ = tokio::task::yield_now() => {}
+        () = tokio::task::yield_now() => {}
     }
     cancellation.cancel();
     tokio::time::timeout(std::time::Duration::from_secs(1), running)
@@ -2006,7 +2029,7 @@ async fn malformed_tool_stop_is_not_success() {
     let agent = agent(vec![response(vec![text("no calls")], StopReason::ToolUse)]);
     assert!(matches!(
         agent.run(input(), RunOptions::default()).await,
-        Err(AgentError::MissingToolCalls)
+        Err(AgentError::MissingToolCalls { .. })
     ));
 }
 
@@ -2018,6 +2041,7 @@ impl LayerImpl for FailStartup {
         self.0.lock().await.push("b:startup".into());
         Err(AgentError::Stopped {
             reason: "startup failed".into(),
+            backtrace: std::backtrace::Backtrace::capture(),
         })
     }
 
@@ -2031,13 +2055,13 @@ impl LayerImpl for FailStartup {
 async fn failed_startup_rolls_back_initialized_layers() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let agent = Agent::builder()
-        .model(model(vec![], false, Default::default()))
+        .model(model(vec![], false, Arc::default()))
         .layers(
             AgentLayer::builder()
-                .layer(Layer::new(trace("a", log.clone())))
+                .layer(Layer::new(trace("a", std::sync::Arc::clone(&log))))
                 .next(Box::new(
                     AgentLayer::builder()
-                        .layer(Layer::new(FailStartup(log.clone())))
+                        .layer(Layer::new(FailStartup(std::sync::Arc::clone(&log))))
                         .build(),
                 ))
                 .build(),
@@ -2059,14 +2083,14 @@ async fn failed_startup_rolls_back_initialized_layers() {
             .count(),
         1
     );
-    assert!(agent.history().current().await.is_empty());
+    assert_eq!(agent.history().current().await, Vec::new());
 }
 
 #[tokio::test]
 async fn child_depth_errors_are_structured_even_without_an_event_observer() {
     let mut tools = ToolRegistry::default();
     tools.register(Child).unwrap();
-    tools.register(Echo(Default::default())).unwrap();
+    tools.register(Echo(Arc::default())).unwrap();
     let agent = Agent::builder()
         .model(model(
             vec![
@@ -2077,7 +2101,7 @@ async fn child_depth_errors_are_structured_even_without_an_event_observer() {
                 response(vec![text("done")], StopReason::EndTurn),
             ],
             false,
-            Default::default(),
+            Arc::default(),
         ))
         .tools(tools)
         .config(AgentConfig::builder().max_tool_depth(1_u32).build())
@@ -2087,6 +2111,6 @@ async fn child_depth_errors_are_structured_even_without_an_event_observer() {
     assert_eq!(report.tool_failures.len(), 1);
     assert!(
         matches!(&*report.tool_failures[0].error, animist::agent::tool::ToolError::Execution { source }
-        if matches!(source.downcast_ref::<AgentError>(), Some(AgentError::ToolDepthExceeded)))
+        if matches!(source.downcast_ref::<AgentError>(), Some(AgentError::ToolDepthExceeded { .. })))
     );
 }

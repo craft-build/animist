@@ -8,26 +8,36 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, ensure};
 use tokio::sync::RwLock;
 
-use super::*;
+use super::{
+    Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
+    StreamResponse, ThinkingConfig, ThinkingSupport, Tool, clamp_error_body, error,
+};
 use crate::protocol::{
     Protocol, ProtocolInput,
     openai::{ChatCompletions, ChatThinking, ChatThinkingMode, ChatTokenLimit, OpenAiOptions},
 };
 
+/// Default Z.AI Coding Plan API root.
 pub const BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
+/// Default environment variable holding the Coding Plan API key.
 pub const API_KEY_ENV: &str = "ZHIPU_API_KEY";
 
 /// Serializable Coding Plan settings; credentials are never serialized.
 #[derive(crate::StructNoDebug!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
+#[expect(missing_debug_implementations, reason = "credential-bearing type; Debug omitted by policy")]
 pub struct ZaiCodingPlanConfig {
+    /// Explicit key; `None` reads `api_key_env` at construction.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
+    /// Environment variable consulted when `api_key` is unset.
     #[builder(default = API_KEY_ENV.to_owned())]
     pub api_key_env: String,
+    /// API root prepended to request paths.
     #[builder(default = BASE_URL.to_owned())]
     pub base_url: String,
+    /// Output cap when neither request nor catalog sets one.
     #[builder(default = 8192_u32)]
     pub max_output_tokens: u32,
     /// Explicit model metadata; no undocumented discovery endpoint is queried.
@@ -40,6 +50,11 @@ impl Default for ZaiCodingPlanConfig {
     }
 }
 
+/// Z.AI Coding Plan provider over its Chat Completions surface.
+#[expect(
+    missing_debug_implementations,
+    reason = "credential-bearing type; Debug omitted by policy"
+)]
 pub struct ZaiCodingPlan {
     config: ZaiCodingPlanConfig,
     client: reqwest::Client,
@@ -48,27 +63,24 @@ pub struct ZaiCodingPlan {
 }
 
 impl ZaiCodingPlan {
+    /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: ZaiCodingPlanConfig) -> Result<Self> {
         let from_env = config.api_key.is_none();
-        let key = match config.api_key.take() {
-            Some(key) => {
-                ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
-                key
-            }
-            None => {
-                let key = std::env::var(&config.api_key_env).context(
-                    error::CredentialEnvironmentSnafu {
-                        variable: &config.api_key_env,
-                    },
-                )?;
-                ensure!(
-                    !key.trim().is_empty(),
-                    error::CredentialsSnafu {
-                        variable: &config.api_key_env
-                    }
-                );
-                key
-            }
+        let key = if let Some(key) = config.api_key.take() {
+            ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
+            key
+        } else {
+            let key =
+                std::env::var(&config.api_key_env).context(error::CredentialEnvironmentSnafu {
+                    variable: &config.api_key_env,
+                })?;
+            ensure!(
+                !key.trim().is_empty(),
+                error::CredentialsSnafu {
+                    variable: &config.api_key_env
+                }
+            );
+            key
         };
         let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
             .context(error::CredentialHeaderSnafu)?;
@@ -82,6 +94,7 @@ impl ZaiCodingPlan {
     }
 
     /// Replaces the runtime HTTP client without changing serializable settings.
+    #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
@@ -90,7 +103,7 @@ impl ZaiCodingPlan {
 
 #[async_trait]
 impl ProviderImpl for ZaiCodingPlan {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "zai-coding-plan"
     }
 
@@ -169,16 +182,7 @@ impl ProviderImpl for ZaiCodingPlan {
                 (ChatThinkingMode::Enabled, None)
             }
             ThinkingConfig::Effort(effort) if supported && thinking.efforts.contains(effort) => {
-                let effort = match effort {
-                    Effort::Minimal => "minimal",
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                    Effort::XHigh => "xhigh",
-                    Effort::Max => "max",
-                    Effort::Adaptive => unreachable!(),
-                };
-                (ChatThinkingMode::Enabled, Some(effort))
+                (ChatThinkingMode::Enabled, effort.openai_wire())
             }
             ThinkingConfig::Budget(_) => return error::ReasoningBudgetUnsupportedSnafu.fail(),
             ThinkingConfig::Effort(effort) => {
@@ -231,7 +235,7 @@ impl ProviderImpl for ZaiCodingPlan {
             .context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.context(error::TransportSnafu)?;
+            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
             return error::HttpSnafu { status, body }.fail();
         }
         Ok(ChatCompletions.assemble(response, event_tx).await?)

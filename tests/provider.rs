@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::{
     history::{ContentBlock, ImageSource, Message, MessageKind, Role},
     provider::{
@@ -127,21 +129,36 @@ fn model_overrides_stay_separate_from_catalog_data() {
     model.overrides.thinking = Some(ThinkingSupport::Required);
     assert_eq!(model.info, info);
 
-    let pricing = Pricing {
+    let unreported = Pricing {
         fast: Some(FastPricing {
             input: 1.0,
             output: 2.0,
         }),
-        ..Pricing::ZERO
+        ..Pricing::default()
     };
-    assert!(pricing.is_zero());
+    assert!(!unreported.is_complete());
+
+    let complete = Pricing {
+        input: Some(1.0),
+        output: Some(2.0),
+        cache_write: Some(1.25),
+        cache_read: Some(0.1),
+        fast: None,
+    };
+    assert!(complete.is_complete());
+
+    let partial = Pricing {
+        input: Some(1.0),
+        ..Pricing::default()
+    };
+    assert!(!partial.is_complete());
 }
 
 struct TestProvider;
 
 #[async_trait]
 impl ProviderImpl for TestProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "test"
     }
 

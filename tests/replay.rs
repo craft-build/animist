@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::{
     history::{ContentBlock, ImageSource, Message, MessageKind, Role, ToolContent},
     protocol::{
@@ -39,86 +41,119 @@ fn result(id: &str) -> ContentBlock {
     }
 }
 
-fn location(message: usize, block: usize) -> ReplayLocation {
-    ReplayLocation { message, block }
-}
-
 #[test]
 fn invalid_exchanges_report_exact_positions_and_call_identity() {
-    let a = Role::Assistant;
-    let u = Role::User;
-    let cases = [
+    type Case = (Vec<Message>, Box<dyn Fn(&ReplayError) -> bool>);
+    let cases: Vec<Case> = vec![
         (
-            vec![message(a.clone(), vec![call("")])],
-            ReplayError::EmptyCallId {
-                location: location(0, 0),
-            },
+            vec![message(Role::Assistant, vec![call("")])],
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::EmptyCallId { location ,
+                    ..}
+                        if *location == ReplayLocation { message: 0, block: 0 }
+                )
+            }),
         ),
         (
-            vec![message(a.clone(), vec![call("a"), call("a")])],
-            ReplayError::DuplicateCallId {
-                location: location(0, 1),
-                first: location(0, 0),
-                id: "a".into(),
-            },
+            vec![message(Role::Assistant, vec![call("a"), call("a")])],
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::DuplicateCallId { location, first, id ,
+                    ..}
+                        if *location == ReplayLocation { message: 0, block: 1 }
+                            && *first == ReplayLocation { message: 0, block: 0 }
+                            && id == "a"
+                )
+            }),
         ),
         (
-            vec![message(u.clone(), vec![result("")])],
-            ReplayError::EmptyResultId {
-                location: location(0, 0),
-            },
+            vec![message(Role::User, vec![result("")])],
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::EmptyResultId { location ,
+                    ..}
+                        if *location == ReplayLocation { message: 0, block: 0 }
+                )
+            }),
         ),
         (
-            vec![message(u.clone(), vec![result("unknown")])],
-            ReplayError::OrphanResult {
-                location: location(0, 0),
-                id: "unknown".into(),
-            },
-        ),
-        (
-            vec![
-                message(u.clone(), vec![result("a")]),
-                message(a.clone(), vec![call("a")]),
-            ],
-            ReplayError::OrphanResult {
-                location: location(0, 0),
-                id: "a".into(),
-            },
-        ),
-        (
-            vec![
-                message(a.clone(), vec![call("a")]),
-                message(u.clone(), vec![result("a"), result("a")]),
-            ],
-            ReplayError::DuplicateResult {
-                location: location(1, 1),
-                first: location(1, 0),
-                id: "a".into(),
-            },
-        ),
-        (
-            vec![message(a.clone(), vec![call("z"), call("a")])],
-            ReplayError::MissingResult {
-                location: location(0, 0),
-                id: "z".into(),
-            },
+            vec![message(Role::User, vec![result("unknown")])],
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::OrphanResult { location, id ,
+                    ..}
+                        if *location == ReplayLocation { message: 0, block: 0 } && id == "unknown"
+                )
+            }),
         ),
         (
             vec![
-                message(a.clone(), vec![call("a")]),
-                message(u, vec![result("a")]),
-                message(a, vec![call("a")]),
+                message(Role::User, vec![result("a")]),
+                message(Role::Assistant, vec![call("a")]),
             ],
-            ReplayError::DuplicateCallId {
-                location: location(2, 0),
-                first: location(0, 0),
-                id: "a".into(),
-            },
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::OrphanResult { location, id ,
+                    ..}
+                        if *location == ReplayLocation { message: 0, block: 0 } && id == "a"
+                )
+            }),
+        ),
+        (
+            vec![
+                message(Role::Assistant, vec![call("a")]),
+                message(Role::User, vec![result("a"), result("a")]),
+            ],
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::DuplicateResult { location, first, id ,
+                    ..}
+                        if *location == ReplayLocation { message: 1, block: 1 }
+                            && *first == ReplayLocation { message: 1, block: 0 }
+                            && id == "a"
+                )
+            }),
+        ),
+        (
+            vec![message(Role::Assistant, vec![call("z"), call("a")])],
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::MissingResult { location, id ,
+                    ..}
+                        if *location == ReplayLocation { message: 0, block: 0 } && id == "z"
+                )
+            }),
+        ),
+        (
+            vec![
+                message(Role::Assistant, vec![call("a")]),
+                message(Role::User, vec![result("a")]),
+                message(Role::Assistant, vec![call("a")]),
+            ],
+            Box::new(|error| {
+                matches!(
+                    error,
+                    ReplayError::DuplicateCallId { location, first, id ,
+                    ..}
+                        if *location == ReplayLocation { message: 2, block: 0 }
+                            && *first == ReplayLocation { message: 0, block: 0 }
+                            && id == "a"
+                )
+            }),
         ),
     ];
     for (messages, expected) in cases {
         let before = serde_json::to_value(&messages).unwrap();
-        assert_eq!(validate_replay(&messages, &[]), Err(expected));
+        let error = validate_replay(&messages, &[]).unwrap_err();
+        assert!(expected(&error), "{error:?}");
         assert_eq!(serde_json::to_value(&messages).unwrap(), before);
     }
 }
@@ -135,29 +170,26 @@ fn role_checks_do_not_interpret_or_discard_opaque_payloads() {
             data: "redacted".into(),
         },
     ] {
-        assert_eq!(
+        assert!(matches!(
             validate_replay(&[message(Role::User, vec![block])], &[]),
-            Err(ReplayError::AssistantContentInUser {
-                location: location(0, 0)
-            })
-        );
+            Err(ReplayError::AssistantContentInUser { location, .. })
+                if location == ReplayLocation { message: 0, block: 0 }
+        ));
     }
-    assert_eq!(
+    assert!(matches!(
         validate_replay(&[message(Role::Assistant, vec![result("a")])], &[]),
-        Err(ReplayError::ResultInAssistant {
-            location: location(0, 0)
-        })
-    );
+        Err(ReplayError::ResultInAssistant { location, .. })
+            if location == ReplayLocation { message: 0, block: 0 }
+    ));
     let mut empty_name = call("a");
     if let ContentBlock::ToolUse { name, .. } = &mut empty_name {
         name.clear();
     }
-    assert_eq!(
+    assert!(matches!(
         validate_replay(&[message(Role::Assistant, vec![empty_name])], &[]),
-        Err(ReplayError::EmptyCallName {
-            location: location(0, 0)
-        })
-    );
+        Err(ReplayError::EmptyCallName { location, .. })
+            if location == ReplayLocation { message: 0, block: 0 }
+    ));
 }
 
 #[test]
@@ -223,50 +255,49 @@ fn declarations_and_activation_names_have_structural_checks_not_visibility_infer
             .input_schema(json!({}))
             .build()
     };
-    assert_eq!(
+    assert!(matches!(
         validate_replay(&[], &[tool("")]),
-        Err(ReplayError::EmptyDeclaration { index: 0 })
-    );
-    assert_eq!(
+        Err(ReplayError::EmptyDeclaration { index, .. }) if index == 0
+    ));
+    assert!(matches!(
         validate_replay(&[], &[tool("x"), tool("x")]),
-        Err(ReplayError::DuplicateDeclaration {
-            index: 1,
-            first_index: 0,
-            name: "x".into(),
-        })
-    );
+        Err(ReplayError::DuplicateDeclaration { index, first_index, name, .. })
+            if index == 1 && first_index == 0 && name == "x"
+    ));
+    let empty_loaded: Box<dyn Fn(&ReplayError) -> bool> = Box::new(|error| {
+        matches!(
+            error,
+            ReplayError::EmptyLoadedTool { location, index, .. }
+                if *location == ReplayLocation { message: 1, block: 0 } && *index == 0
+        )
+    });
+    let duplicate_loaded: Box<dyn Fn(&ReplayError) -> bool> = Box::new(|error| {
+        matches!(
+            error,
+            ReplayError::DuplicateLoadedTool { location, index, first_index, name, .. }
+                if *location == ReplayLocation { message: 1, block: 0 }
+                    && *index == 1
+                    && *first_index == 0
+                    && name == "x"
+        )
+    });
     for (names, expected) in [
-        (
-            vec!["".into()],
-            ReplayError::EmptyLoadedTool {
-                location: location(1, 0),
-                index: 0,
-            },
-        ),
-        (
-            vec!["x".into(), "x".into()],
-            ReplayError::DuplicateLoadedTool {
-                location: location(1, 0),
-                index: 1,
-                first_index: 0,
-                name: "x".into(),
-            },
-        ),
+        (vec![String::new()], empty_loaded),
+        (vec!["x".into(), "x".into()], duplicate_loaded),
     ] {
         let mut output = result("a");
         if let ContentBlock::ToolResult { loaded_tools, .. } = &mut output {
             *loaded_tools = names;
         }
-        assert_eq!(
-            validate_replay(
-                &[
-                    message(Role::Assistant, vec![call("a")]),
-                    message(Role::User, vec![output])
-                ],
-                &[]
-            ),
-            Err(expected)
-        );
+        let error = validate_replay(
+            &[
+                message(Role::Assistant, vec![call("a")]),
+                message(Role::User, vec![output]),
+            ],
+            &[],
+        )
+        .unwrap_err();
+        assert!(expected(&error), "{error:?}");
     }
     let mut output = result("a");
     if let ContentBlock::ToolResult { loaded_tools, .. } = &mut output {
@@ -311,7 +342,7 @@ fn all_chat_protocols_share_validation_and_preserve_typed_provider_errors() {
     ] {
         let error: ProviderError = error.into();
         assert!(matches!(error, ProviderError::Protocol {
-            source: ProtocolError::Replay { source: ReplayError::OrphanResult { id, location } }
+            source: ProtocolError::Replay { source: ReplayError::OrphanResult { id, location, .. } }
         } if id == "orphan" && location == ReplayLocation { message: 0, block: 0 }));
     }
 }
@@ -423,21 +454,17 @@ async fn restored_revisions_and_explicit_compaction_are_validated_without_rewrit
         let before_validation = history.snapshot().await;
         let error = validate_replay(&history.current().await, &[]).unwrap_err();
         if removed == 1 {
-            assert_eq!(
+            assert!(matches!(
                 error,
-                ReplayError::OrphanResult {
-                    location: location(0, 0),
-                    id: "a".into()
-                }
-            );
+                ReplayError::OrphanResult { location, id, .. }
+                    if location == ReplayLocation { message: 0, block: 0 } && id == "a"
+            ));
         } else {
-            assert_eq!(
+            assert!(matches!(
                 error,
-                ReplayError::MissingResult {
-                    location: location(0, 0),
-                    id: "a".into()
-                }
-            );
+                ReplayError::MissingResult { location, id, .. }
+                    if location == ReplayLocation { message: 0, block: 0 } && id == "a"
+            ));
         }
         assert_eq!(
             before_validation.entries(),

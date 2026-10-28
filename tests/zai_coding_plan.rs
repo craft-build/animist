@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use std::time::Duration;
 
 use animist::{
@@ -358,7 +360,7 @@ async fn catalog_listing_is_explicit_and_does_not_make_network_requests() {
     let catalog = Catalog::from_slice(&serde_json::to_vec(&json!({"zai-coding-plan":{
         "id":"zai-coding-plan","name":"Z.AI Coding Plan","models":{"glm-5.3":{
             "name":"GLM","reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high","max"]}],
-            "limit":{"context":1000000,"output":131072},"extra_source_data":"preserved"
+            "limit":{"context":1_000_000,"output":131_072},"extra_source_data":"preserved"
         }}
     }})).unwrap()).unwrap();
     let source = catalog.provider("zai-coding-plan").unwrap().clone();
@@ -376,14 +378,14 @@ async fn catalog_listing_is_explicit_and_does_not_make_network_requests() {
     assert!(!models[0].features.thinking.required);
     let provider =
         ZaiCodingPlan::new(ZaiCodingPlanConfig::builder().api_key("test-key").build()).unwrap();
-    assert!(provider.list_models().await.unwrap().is_empty());
+    assert_eq!(provider.list_models().await.unwrap(), Vec::new());
 }
 
 #[tokio::test]
 async fn credentials_and_unsupported_policy_fail_before_transport() {
     assert!(matches!(
         ZaiCodingPlan::new(ZaiCodingPlanConfig::builder().api_key("").build()),
-        Err(ProviderError::EmptyApiKey)
+        Err(ProviderError::EmptyApiKey { .. })
     ));
     assert!(matches!(
         ZaiCodingPlan::new(ZaiCodingPlanConfig::builder().api_key("bad\nkey").build()),
@@ -421,7 +423,7 @@ async fn credentials_and_unsupported_policy_fail_before_transport() {
             .unwrap_err();
         assert!(matches!(
             error,
-            ProviderError::ReasoningBudgetUnsupported
+            ProviderError::ReasoningBudgetUnsupported { .. }
                 | ProviderError::UnsupportedReasoningEffort { .. }
         ));
     }
@@ -430,7 +432,7 @@ async fn credentials_and_unsupported_policy_fail_before_transport() {
         provider
             .stream_message(&model, &[], "", &[], &tx, RequestOptions::default())
             .await,
-        Err(ProviderError::ReasoningRequired)
+        Err(ProviderError::ReasoningRequired { .. })
     ));
     model.overrides.thinking = Some(ThinkingSupport::No);
     assert!(matches!(
@@ -486,7 +488,8 @@ async fn failures_keep_http_payloads_and_protocol_error_types() {
         .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(error, ProviderError::Http { status:429, body }
+    assert!(matches!(error, ProviderError::Http { status:429, body ,
+    ..}
         if serde_json::from_str::<Value>(&body).unwrap()["error"]["code"] == "1302"));
     task.await.unwrap();
     let (url, task) = server(
@@ -507,7 +510,8 @@ async fn failures_keep_http_payloads_and_protocol_error_types() {
         .unwrap_err();
     assert!(
         matches!(error, ProviderError::Protocol { source:ProtocolError::OpenAI {
-        source:OpenAIProtocolError::Api { error },
+        source:OpenAIProtocolError::Api { error ,
+        ..},
     }} if error["code"] == "stream-error")
     );
     task.await.unwrap();

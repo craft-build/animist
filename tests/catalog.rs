@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use animist::{
     catalog::{Catalog, Error},
     provider::{Effort, Tier},
@@ -26,24 +28,27 @@ fn populates_model_info_without_inventing_capabilities() {
     );
     assert!(!model.info.features.tool_examples);
     assert!(!model.info.features.deferred_tools);
-    assert_eq!(model.info.config.context_window, Some(200000));
+    assert_eq!(model.info.config.context_window, Some(200_000));
     assert_eq!(model.info.config.max_output_tokens, Some(20000));
-    assert_eq!(model.info.pricing.input, 3.0);
-    assert_eq!(model.info.pricing.output, 15.0);
-    assert_eq!(model.info.pricing.cache_read, 0.3);
-    assert_eq!(model.info.pricing.cache_write, 3.75);
+    assert_eq!(model.info.pricing.input, Some(3.0));
+    assert_eq!(model.info.pricing.output, Some(15.0));
+    assert_eq!(model.info.pricing.cache_read, Some(0.3));
+    assert_eq!(model.info.pricing.cache_write, Some(3.75));
     assert_eq!(model.info.pricing.fast, None);
 
     let budget = &catalog.model("example", "budget-only").unwrap().info;
     assert!(budget.features.thinking.supported);
-    assert!(budget.features.thinking.efforts.is_empty());
-    assert_eq!(budget.pricing.cache_read, 0.0);
-    assert_eq!(budget.pricing.cache_write, 0.0);
+    assert_eq!(budget.features.thinking.efforts, Vec::new());
+    assert_eq!(budget.pricing.input, Some(1.0));
+    assert_eq!(budget.pricing.cache_read, None);
+    assert_eq!(budget.pricing.cache_write, None);
 
     let text = &catalog.model("example", "text-only").unwrap().info;
     assert!(!text.features.vision);
     assert!(!text.features.thinking.supported);
-    assert!(text.features.thinking.efforts.is_empty());
+    assert_eq!(text.features.thinking.efforts, Vec::new());
+    assert_eq!(text.pricing.input, None);
+    assert_eq!(catalog.model("example", "unnamed").unwrap().name, "unnamed");
 }
 
 #[test]
@@ -75,7 +80,7 @@ fn preserves_provider_metadata_and_original_model_records() {
             .info
             .pricing
             .input,
-        0.0
+        Some(0.0)
     );
     assert_eq!(
         catalog
@@ -84,7 +89,7 @@ fn preserves_provider_metadata_and_original_model_records() {
             .info
             .pricing
             .input,
-        3.0
+        Some(3.0)
     );
     assert!(catalog.model("missing", "reasoner").is_none());
     assert!(catalog.model("example", "missing").is_none());

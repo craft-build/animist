@@ -1,23 +1,29 @@
-//! OpenAI API-key provider with explicit protocol selection.
+//! `OpenAI` API-key provider with explicit protocol selection.
 
 use async_trait::async_trait;
 use bon::Builder;
 use flume::Sender;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use snafu::{OptionExt, ResultExt};
+use snafu::{OptionExt, ResultExt, ensure};
 use tokio::sync::RwLock;
 
-use super::*;
+use super::{
+    Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
+    StreamResponse, ThinkingConfig, ThinkingSupport, Tool, clamp_error_body, error,
+};
 use crate::protocol::{
     Protocol as ProtocolAdapter, ProtocolInput,
     openai::{ChatCompletions, OpenAiOptions, Responses},
 };
 
+/// Wire protocol used for chat requests; `Responses` is OpenAI-native.
 #[derive(crate::Enum!, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
+    /// `OpenAI` Chat Completions compatibility surface.
     ChatCompletions,
+    /// `OpenAI` Responses API surface.
     #[default]
     Responses,
 }
@@ -26,18 +32,25 @@ pub enum Protocol {
 #[derive(crate::StructNoDebug!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
+#[expect(missing_debug_implementations, reason = "credential-bearing type; Debug omitted by policy")]
 pub struct OpenAiConfig {
+    /// Explicit key; `None` reads `api_key_env` at construction.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
+    /// Environment variable consulted when `api_key` is unset.
     #[builder(default = "OPENAI_API_KEY".to_owned())]
     pub api_key_env: String,
+    /// API root prepended to request paths.
     #[builder(default = "https://api.openai.com/v1".to_owned())]
     pub base_url: String,
+    /// Wire protocol for chat requests.
     #[builder(default)]
     pub protocol: Protocol,
+    /// `OpenAI-Organization` header, when the key belongs to one.
     pub organization: Option<String>,
+    /// `OpenAI-Project` header, when the key is project-scoped.
     pub project: Option<String>,
-    /// Optional catalog metadata; only models returned by OpenAI are listed.
+    /// Optional catalog metadata; only models returned by `OpenAI` are listed.
     pub catalog: Option<crate::catalog::ProviderCatalog>,
 }
 
@@ -47,6 +60,11 @@ impl Default for OpenAiConfig {
     }
 }
 
+/// `OpenAI` provider over an API-key transport, with explicit protocol choice.
+#[expect(
+    missing_debug_implementations,
+    reason = "credential-bearing type; Debug omitted by policy"
+)]
 pub struct OpenAi {
     config: OpenAiConfig,
     client: reqwest::Client,
@@ -55,6 +73,7 @@ pub struct OpenAi {
 }
 
 impl OpenAi {
+    /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: OpenAiConfig) -> Result<Self> {
         let from_env = config.api_key.is_none();
         let key = match config.api_key.take() {
@@ -62,12 +81,20 @@ impl OpenAi {
             Some(_) => {
                 return error::EmptyApiKeySnafu.fail();
             }
-            None => std::env::var(&config.api_key_env)
-                .ok()
-                .filter(|key| !key.trim().is_empty())
-                .context(error::CredentialsSnafu {
-                    variable: &config.api_key_env,
-                })?,
+            None => {
+                let key = std::env::var(&config.api_key_env).context(
+                    error::CredentialEnvironmentSnafu {
+                        variable: &config.api_key_env,
+                    },
+                )?;
+                ensure!(
+                    !key.trim().is_empty(),
+                    error::CredentialsSnafu {
+                        variable: &config.api_key_env
+                    }
+                );
+                key
+            }
         };
         Ok(Self {
             config,
@@ -78,6 +105,7 @@ impl OpenAi {
     }
 
     /// Replaces the runtime HTTP client without changing serializable settings.
+    #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
@@ -109,7 +137,7 @@ impl OpenAi {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.context(error::TransportSnafu)?;
+            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
             return error::HttpSnafu { status, body }.fail();
         }
         Ok(response)
@@ -133,30 +161,22 @@ fn reasoning_effort(model: &Model, options: &RequestOptions) -> Result<Option<&'
         ThinkingConfig::Off | ThinkingConfig::Adaptive => Ok(None),
         ThinkingConfig::Budget(_) => error::ReasoningBudgetUnsupportedSnafu.fail(),
         ThinkingConfig::Effort(effort) => {
-            if !support || !model.info.features.thinking.efforts.contains(effort) {
-                return error::UnsupportedReasoningEffortSnafu {
-                    effort: effort.clone(),
+            ensure!(
+                support
+                    && !matches!(effort, Effort::Adaptive | Effort::Max)
+                    && model.info.features.thinking.efforts.contains(effort),
+                error::UnsupportedReasoningEffortSnafu {
+                    effort: effort.clone()
                 }
-                .fail();
-            }
-            match effort {
-                Effort::Minimal => Ok(Some("minimal")),
-                Effort::Low => Ok(Some("low")),
-                Effort::Medium => Ok(Some("medium")),
-                Effort::High => Ok(Some("high")),
-                Effort::XHigh => Ok(Some("xhigh")),
-                Effort::Adaptive | Effort::Max => error::UnsupportedReasoningEffortSnafu {
-                    effort: effort.clone(),
-                }
-                .fail(),
-            }
+            );
+            Ok(effort.openai_wire())
         }
     }
 }
 
 #[async_trait]
 impl ProviderImpl for OpenAi {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "openai"
     }
 
@@ -233,12 +253,17 @@ impl ProviderImpl for OpenAi {
 
     async fn reload_auth(&self) -> Result<()> {
         if self.from_env {
-            let key = std::env::var(&self.config.api_key_env)
-                .ok()
-                .filter(|key| !key.trim().is_empty())
-                .context(error::CredentialsSnafu {
+            let key = std::env::var(&self.config.api_key_env).context(
+                error::CredentialEnvironmentSnafu {
                     variable: &self.config.api_key_env,
-                })?;
+                },
+            )?;
+            ensure!(
+                !key.trim().is_empty(),
+                error::CredentialsSnafu {
+                    variable: &self.config.api_key_env
+                }
+            );
             *self.key.write().await = key;
         }
         Ok(())

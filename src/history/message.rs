@@ -4,6 +4,7 @@ use bon::Builder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Conversation role; provider-neutral two-state ontology.
 #[derive(Enum!, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -12,6 +13,7 @@ pub enum Role {
     Assistant,
 }
 
+/// Inline or remote image reference in messages and tool output.
 #[derive(Enum!, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ImageSource {
@@ -85,6 +87,7 @@ impl<'de> Deserialize<'de> for ToolContents {
     }
 }
 
+/// One conversation content block: text, reasoning, tool exchange, or image.
 #[derive(Enum!, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
@@ -120,11 +123,13 @@ pub enum ContentBlock {
 }
 
 impl ContentBlock {
+    /// Whether the block holds reasoning content, redacted or not.
     pub fn is_thinking(&self) -> bool {
         matches!(self, Self::Thinking { .. } | Self::RedactedThinking { .. })
     }
 }
 
+/// Distinguishes user turns from injected observations.
 #[derive(Enum!, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -134,19 +139,23 @@ pub enum MessageKind {
 }
 
 impl MessageKind {
+    /// Whether the message is a user-authored turn.
     pub fn is_turn(&self) -> bool {
         matches!(self, Self::Turn)
     }
 }
 
+/// One conversation message: role, ordered content blocks, and kind.
 #[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 #[serde(rename_all = "snake_case")]
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
+    /// Optional consumer-facing rendering; never sent to the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_text: Option<String>,
+    /// `Turn` messages start user turns; defaults to `Turn`.
     #[serde(default, skip_serializing_if = "MessageKind::is_turn")]
     pub kind: MessageKind,
 }

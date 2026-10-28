@@ -11,7 +11,11 @@ use serde_json::Value;
 use snafu::{ResultExt, ensure};
 use tokio::sync::RwLock;
 
-use super::*;
+use super::{
+    Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message,
+    Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse,
+    ThinkingConfig, ThinkingSupport, Tool, clamp_error_body, error,
+};
 use crate::protocol::{
     EmbeddingProtocol, Protocol, ProtocolInput,
     openai::{ChatCompletions, ChatTokenLimit, OpenAiOptions},
@@ -21,9 +25,12 @@ use crate::protocol::{
 #[derive(crate::StructNoDebug!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
+#[expect(missing_debug_implementations, reason = "credential-bearing type; Debug omitted by policy")]
 pub struct OmlxConfig {
+    /// API root prepended to request paths.
     #[builder(default = "http://localhost:8000/v1".to_owned())]
     pub base_url: String,
+    /// Explicit key; `None` reads `api_key_env` or runs unauthenticated.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
     /// Only read when configured; missing or empty values are errors.
@@ -38,6 +45,11 @@ impl Default for OmlxConfig {
     }
 }
 
+/// Local oMLX provider with optional bearer authentication.
+#[expect(
+    missing_debug_implementations,
+    reason = "credential-bearing type; Debug omitted by policy"
+)]
 pub struct Omlx {
     config: OmlxConfig,
     client: reqwest::Client,
@@ -46,6 +58,7 @@ pub struct Omlx {
 }
 
 impl Omlx {
+    /// Resolves credentials and binds the provider to its settings.
     pub fn new(mut config: OmlxConfig) -> Result<Self> {
         let from_env = config.api_key.is_none();
         let key = match config.api_key.take() {
@@ -81,6 +94,7 @@ impl Omlx {
     }
 
     /// Replaces the runtime HTTP client without changing serializable settings.
+    #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
@@ -114,7 +128,7 @@ impl Omlx {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.context(error::TransportSnafu)?;
+            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
             return error::HttpSnafu { status, body }.fail();
         }
         Ok(response)
@@ -123,7 +137,7 @@ impl Omlx {
 
 #[async_trait]
 impl ProviderImpl for Omlx {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "omlx"
     }
 
@@ -161,19 +175,9 @@ impl ProviderImpl for Omlx {
             ThinkingConfig::Off => (Some(false), Some(0), None),
             ThinkingConfig::Adaptive => (None, None, None),
             ThinkingConfig::Effort(Effort::Adaptive) if supported => (None, None, None),
-            ThinkingConfig::Effort(effort) if supported && thinking.efforts.contains(effort) => (
-                Some(true),
-                None,
-                Some(match effort {
-                    Effort::Minimal => "minimal",
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                    Effort::XHigh => "xhigh",
-                    Effort::Max => "max",
-                    Effort::Adaptive => unreachable!(),
-                }),
-            ),
+            ThinkingConfig::Effort(effort) if supported && thinking.efforts.contains(effort) => {
+                (Some(true), None, effort.openai_wire())
+            }
             ThinkingConfig::Effort(effort) => {
                 return error::UnsupportedReasoningEffortSnafu {
                     effort: effort.clone(),
@@ -262,7 +266,7 @@ impl ProviderImpl for Omlx {
 
 #[async_trait]
 impl EmbeddingProviderImpl for Omlx {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "omlx"
     }
 

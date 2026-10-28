@@ -1,7 +1,10 @@
+//! Vendor-neutral protocol error layering.
+
 use snafu::Snafu;
 
 use super::openai::OpenAIProtocolError;
 
+/// Failures surfaced by every protocol adapter through `protocol::Result`.
 #[derive(Debug, Snafu)]
 pub enum ProtocolError {
     #[snafu(transparent)]

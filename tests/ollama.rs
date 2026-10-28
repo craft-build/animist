@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use std::time::Duration;
 
 use animist::{
@@ -294,7 +296,7 @@ async fn signed_reasoning_is_rejected_before_transport() {
         error,
         ProviderError::Protocol {
             source: ProtocolError::OpenAI {
-                source: OpenAIProtocolError::UnsupportedChatContent,
+                source: OpenAIProtocolError::UnsupportedChatContent { .. },
             },
         }
     ));
@@ -352,7 +354,7 @@ async fn rejects_unsupported_policy_before_sending() {
             .unwrap_err();
         assert!(matches!(
             error,
-            ProviderError::ReasoningBudgetUnsupported
+            ProviderError::ReasoningBudgetUnsupported { .. }
                 | ProviderError::UnsupportedReasoningEffort { .. }
         ));
     }
@@ -378,7 +380,7 @@ async fn rejects_unsupported_policy_before_sending() {
             .stream_message(&required, &[], "", &[], &tx, RequestOptions::default())
             .await
             .unwrap_err(),
-        ProviderError::ReasoningRequired
+        ProviderError::ReasoningRequired { .. }
     ));
     let mut wrong = model();
     wrong.provider = Provider::new(
@@ -413,7 +415,7 @@ async fn rejects_unsupported_policy_before_sending() {
             )
             .await
             .unwrap_err(),
-        ProviderError::ZeroOutputTokenLimit
+        ProviderError::ZeroOutputTokenLimit { .. }
     ));
 }
 
@@ -426,6 +428,9 @@ async fn preserves_http_error_body() {
         .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
         .await
         .unwrap_err();
-    assert!(matches!(error, ProviderError::Http { status: 404, body: payload } if payload == body));
+    assert!(
+        matches!(error, ProviderError::Http { status: 404, body: payload ,
+    ..} if payload == body)
+    );
     task.await.unwrap();
 }

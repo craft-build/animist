@@ -9,7 +9,12 @@ use serde_json::Value;
 use snafu::{ResultExt, ensure};
 use tokio::sync::RwLock;
 
-use super::*;
+use super::{
+    Config, Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse,
+    Features, Message, Model, ModelInfo, Pricing, ProviderEvent, ProviderImpl, RequestOptions,
+    Result, StreamResponse, Thinking, ThinkingConfig, ThinkingSupport, Tier, Tool,
+    clamp_error_body, error,
+};
 use crate::{
     catalog::CatalogModel,
     protocol::{
@@ -18,21 +23,27 @@ use crate::{
     },
 };
 
+/// Default Synthetic API root, including its `/openai/v1` prefix.
 pub const BASE_URL: &str = "https://api.synthetic.new/openai/v1";
+/// Default environment variable holding the Synthetic API key.
 pub const API_KEY_ENV: &str = "SYNTHETIC_API_KEY";
 
 /// Serializable Synthetic settings; API keys are never serialized.
 #[derive(crate::StructNoDebug!, PartialEq, Eq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
+#[expect(missing_debug_implementations, reason = "credential-bearing type; Debug omitted by policy")]
 pub struct SyntheticConfig {
+    /// Explicit key; `None` reads `api_key_env` at construction.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
+    /// Environment variable consulted when `api_key` is unset.
     #[builder(default = API_KEY_ENV.to_owned())]
     pub api_key_env: String,
     /// OpenAI-compatible API base, including `/openai/v1`.
     #[builder(default = BASE_URL.to_owned())]
     pub base_url: String,
+    /// Output cap when neither request nor catalog sets one.
     #[builder(default = 8192_u32)]
     pub max_output_tokens: u32,
 }
@@ -43,6 +54,11 @@ impl Default for SyntheticConfig {
     }
 }
 
+/// Synthetic provider over its OpenAI-compatible surface.
+#[expect(
+    missing_debug_implementations,
+    reason = "credential-bearing type; Debug omitted by policy"
+)]
 pub struct Synthetic {
     config: SyntheticConfig,
     client: reqwest::Client,
@@ -51,27 +67,24 @@ pub struct Synthetic {
 }
 
 impl Synthetic {
+    /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: SyntheticConfig) -> Result<Self> {
         let from_env = config.api_key.is_none();
-        let key = match config.api_key.take() {
-            Some(key) => {
-                ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
-                key
-            }
-            None => {
-                let key = std::env::var(&config.api_key_env).context(
-                    error::CredentialEnvironmentSnafu {
-                        variable: &config.api_key_env,
-                    },
-                )?;
-                ensure!(
-                    !key.trim().is_empty(),
-                    error::CredentialsSnafu {
-                        variable: &config.api_key_env
-                    }
-                );
-                key
-            }
+        let key = if let Some(key) = config.api_key.take() {
+            ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
+            key
+        } else {
+            let key =
+                std::env::var(&config.api_key_env).context(error::CredentialEnvironmentSnafu {
+                    variable: &config.api_key_env,
+                })?;
+            ensure!(
+                !key.trim().is_empty(),
+                error::CredentialsSnafu {
+                    variable: &config.api_key_env
+                }
+            );
+            key
         };
         let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
             .context(error::CredentialHeaderSnafu)?;
@@ -85,6 +98,7 @@ impl Synthetic {
     }
 
     /// Replaces the runtime HTTP client without changing serializable settings.
+    #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;
         self
@@ -118,7 +132,7 @@ impl Synthetic {
         let response = request.send().await.context(error::TransportSnafu)?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body = response.text().await.context(error::TransportSnafu)?;
+            let body = clamp_error_body(response.text().await.context(error::TransportSnafu)?);
             return error::HttpSnafu { status, body }.fail();
         }
         Ok(response)
@@ -157,7 +171,7 @@ impl Synthetic {
 
 #[async_trait]
 impl ProviderImpl for Synthetic {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "synthetic"
     }
 
@@ -197,15 +211,7 @@ impl ProviderImpl for Synthetic {
                 None
             }
             ThinkingConfig::Effort(effort) if supported && thinking.efforts.contains(effort) => {
-                Some(match effort {
-                    Effort::Minimal => "minimal",
-                    Effort::Low => "low",
-                    Effort::Medium => "medium",
-                    Effort::High => "high",
-                    Effort::XHigh => "xhigh",
-                    Effort::Max => "max",
-                    Effort::Adaptive => unreachable!(),
-                })
+                effort.openai_wire()
             }
             ThinkingConfig::Budget(_) => return error::ReasoningBudgetUnsupportedSnafu.fail(),
             ThinkingConfig::Effort(effort) => {
@@ -279,7 +285,7 @@ impl ProviderImpl for Synthetic {
 
 #[async_trait]
 impl EmbeddingProviderImpl for Synthetic {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "synthetic"
     }
 
@@ -360,9 +366,10 @@ enum Price {
 }
 
 impl Price {
-    fn per_million(&self, field: &'static str) -> Result<f64> {
+    /// USD per million tokens; `Ok(None)` when the source omits the rate.
+    fn per_million(&self, field: &'static str) -> Result<Option<f64>> {
         let (rate, value) = match self {
-            Self::Missing => return Ok(0.0),
+            Self::Missing => return Ok(None),
             Self::Number(value) => (Some(*value), Value::from(*value)),
             Self::Text(value) => (
                 value.trim_start_matches('$').parse().ok(),
@@ -371,7 +378,7 @@ impl Price {
         };
         match rate {
             Some(rate) if rate.is_finite() && rate >= 0.0 && (rate * 1_000_000.0).is_finite() => {
-                Ok(rate * 1_000_000.0)
+                Ok(Some(rate * 1_000_000.0))
             }
             _ => error::InvalidSyntheticPriceSnafu { field, value }.fail(),
         }
@@ -413,14 +420,14 @@ impl SourceModel {
             )
             .pricing(
                 Pricing::builder()
-                    .input(self.pricing.prompt.per_million("prompt")?)
-                    .output(self.pricing.completion.per_million("completion")?)
-                    .cache_read(
+                    .maybe_input(self.pricing.prompt.per_million("prompt")?)
+                    .maybe_output(self.pricing.completion.per_million("completion")?)
+                    .maybe_cache_read(
                         self.pricing
                             .input_cache_reads
                             .per_million("input_cache_reads")?,
                     )
-                    .cache_write(
+                    .maybe_cache_write(
                         self.pricing
                             .input_cache_writes
                             .per_million("input_cache_writes")?,

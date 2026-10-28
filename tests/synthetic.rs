@@ -1,3 +1,5 @@
+#![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
 use std::time::Duration;
 
 use animist::{
@@ -91,11 +93,13 @@ async fn embedding_handles_share_synthetic_and_return_input_order() {
         )
         .unwrap(),
     );
-    let chat = Provider::from_arc(synthetic.clone());
-    let embeddings = EmbeddingProvider::from_arc(synthetic);
+    let cloned = Arc::clone(&synthetic);
+    let embeddings = EmbeddingProvider::from_arc(cloned);
+    let shared: Arc<dyn animist::provider::ProviderImpl + Send + Sync> = synthetic;
+    let chat = Provider::from_arc(shared);
     assert_eq!(
-        Arc::as_ptr(chat.inner()) as *const (),
-        Arc::as_ptr(embeddings.inner()) as *const ()
+        Arc::as_ptr(chat.inner()).cast::<()>(),
+        Arc::as_ptr(embeddings.inner()).cast::<()>()
     );
     let model = EmbeddingModel::builder()
         .id("hf:nomic-ai/nomic-embed-text-v1.5")
@@ -106,7 +110,7 @@ async fn embedding_handles_share_synthetic_and_return_input_order() {
             "search_query: Rust".into(),
             "search_document: Tokio".into(),
         ])
-        .dimensions(2_u32)
+        .dimensions(std::num::NonZeroU32::new(2).unwrap())
         .build();
     let response = embeddings.clone().embed(&model, &request).await.unwrap();
     assert_eq!(response.model, "hf:resolved");
@@ -191,22 +195,13 @@ async fn embeddings_reject_invalid_requests_before_io() {
         provider.embed(&model, &EmbeddingRequest::default()).await,
         Err(ProviderError::Protocol {
             source: ProtocolError::OpenAI {
-                source: OpenAIProtocolError::EmptyEmbeddingInput
+                source: OpenAIProtocolError::EmptyEmbeddingInput { .. }
             }
         })
     ));
     let request = EmbeddingRequest::builder()
         .input(vec!["text".into()])
-        .dimensions(0_u32)
         .build();
-    assert!(matches!(
-        provider.embed(&model, &request).await,
-        Err(ProviderError::Protocol {
-            source: ProtocolError::OpenAI {
-                source: OpenAIProtocolError::ZeroEmbeddingDimensions
-            }
-        })
-    ));
     model.provider = "other".into();
     assert!(matches!(
         provider.embed(&model, &request).await,
@@ -252,7 +247,7 @@ async fn embeddings_validate_indices_dimensions_and_json() {
                     .build(),
                 &EmbeddingRequest::builder()
                     .input(vec!["text".into()])
-                    .dimensions(2_u32)
+                    .dimensions(std::num::NonZeroU32::new(2).unwrap())
                     .build(),
             )
             .await
@@ -268,20 +263,24 @@ async fn embeddings_validate_indices_dimensions_and_json() {
                 (expected, &source),
                 (
                     "range",
-                    OpenAIProtocolError::EmbeddingIndexOutOfRange { index: 1, count: 1 }
+                    OpenAIProtocolError::EmbeddingIndexOutOfRange {
+                        index: 1,
+                        count: 1,
+                        ..
+                    }
                 ) | (
                     "duplicate",
-                    OpenAIProtocolError::DuplicateEmbeddingIndex { index: 0 }
+                    OpenAIProtocolError::DuplicateEmbeddingIndex { index: 0, .. }
                 ) | (
                     "missing",
-                    OpenAIProtocolError::MissingEmbedding { index: 0 }
+                    OpenAIProtocolError::MissingEmbedding { index: 0, .. }
                 ) | (
                     "dimensions",
                     OpenAIProtocolError::EmbeddingDimensions { .. }
                 ) | ("decode", OpenAIProtocolError::DecodeEmbeddings { .. })
                     | (
                         "finite",
-                        OpenAIProtocolError::NonFiniteEmbedding { index: 0 }
+                        OpenAIProtocolError::NonFiniteEmbedding { index: 0, .. }
                     )
             ),
             "{expected}: {source:?}"
@@ -321,9 +320,8 @@ async fn embeddings_preserve_http_errors() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, ProviderError::Http { status: 429, body } if body == r#"{"error":"quota"}"#)
-    );
+    assert!(matches!(error, ProviderError::Http { status: 429, body ,
+        ..} if body == r#"{"error":"quota"}"#));
     task.await.unwrap();
 }
 
@@ -422,13 +420,13 @@ async fn eof_still_requires_done_and_a_finish_reason() {
             ProviderError::Protocol {
                 source:
                     ProtocolError::OpenAI {
-                        source: OpenAIProtocolError::TruncatedChatStream { finish_reason },
+                        source: OpenAIProtocolError::TruncatedChatStream { finish_reason, .. },
                     },
             } if !done => assert_eq!(finish_reason, finish.map(|_| StopReason::EndTurn)),
             ProviderError::Protocol {
                 source:
                     ProtocolError::OpenAI {
-                        source: OpenAIProtocolError::MissingFinishReason,
+                        source: OpenAIProtocolError::MissingFinishReason { .. },
                     },
             } if done => {}
             error => panic!("unexpected completion error: {error:?}"),
@@ -502,7 +500,7 @@ fn shared_chat_adapter_replays_reasoning_only_when_enabled() {
     assert!(matches!(
         ChatCompletions.request(input, &OpenAiOptions::default()),
         Err(animist::protocol::ProtocolError::OpenAI {
-            source: animist::protocol::openai::OpenAIProtocolError::ChatReasoningReplayDisabled,
+            source: animist::protocol::openai::OpenAIProtocolError::ChatReasoningReplayDisabled { .. },
         })
     ));
     let body = ChatCompletions
@@ -554,7 +552,7 @@ async fn protocol_errors_keep_the_existing_layered_types_and_payloads() {
                 ProviderError::Protocol {
                     source:
                         ProtocolError::OpenAI {
-                            source: OpenAIProtocolError::Api { error },
+                            source: OpenAIProtocolError::Api { error, .. },
                         },
                 },
             ) => assert_eq!(error["code"], "test-error"),
@@ -799,7 +797,7 @@ async fn sends_reasoning_effort_and_preserves_server_default_for_adaptive() {
 async fn discovery_preserves_metadata_and_normalizes_prices_without_name_heuristics() {
     let body = json!({"data":[
         {"id":"syn:large:vision","display_name":"Recommended","input_modalities":["text","image"],
-         "output_modalities":["text"],"context_length":100000,"max_output_length":4096,
+         "output_modalities":["text"],"context_length":100_000,"max_output_length":4096,
          "supported_features":["tools","reasoning"],
          "reasoning_parameters":{"efforts":["none","low","high","future"]},
          "pricing":{"prompt":"$0.000001","completion":"$0.000002","input_cache_reads":"$0.0000001"},
@@ -824,11 +822,11 @@ async fn discovery_preserves_metadata_and_normalizes_prices_without_name_heurist
     assert!(entry.info.features.thinking.supported);
     assert!(!entry.info.features.thinking.required);
     assert_eq!(entry.info.features.thinking.efforts.len(), 2);
-    assert_eq!(entry.info.pricing.input, 1.0);
-    assert_eq!(entry.info.pricing.output, 2.0);
-    assert!((entry.info.pricing.cache_read - 0.1).abs() < 1e-9);
+    assert_eq!(entry.info.pricing.input, Some(1.0));
+    assert_eq!(entry.info.pricing.output, Some(2.0));
+    assert!((entry.info.pricing.cache_read.unwrap() - 0.1).abs() < 1e-9);
     assert_eq!(entry.info.config.max_output_tokens, Some(4096));
-    assert_eq!(entry.info.tier, Default::default());
+    assert_eq!(entry.info.tier, animist::provider::Tier::default());
     let (headers, _) = task.await.unwrap();
     assert!(headers.starts_with("get /openai/v1/models "));
 }
@@ -850,7 +848,8 @@ async fn preserves_http_error_payloads() {
     .unwrap();
     let error = provider.list_models().await.unwrap_err();
     assert!(
-        matches!(error, ProviderError::Http { status: 429, ref body }
+        matches!(error, ProviderError::Http { status: 429, ref body ,
+        ..}
         if serde_json::from_str::<Value>(body).unwrap()["error"]["message"] == "rate limit")
     );
     task.await.unwrap();
@@ -860,7 +859,7 @@ async fn preserves_http_error_payloads() {
 async fn rejects_invalid_credentials_and_unsupported_controls_without_io() {
     assert!(matches!(
         Synthetic::new(SyntheticConfig::builder().api_key("").build()),
-        Err(ProviderError::EmptyApiKey)
+        Err(ProviderError::EmptyApiKey { .. })
     ));
     assert!(matches!(
         Synthetic::new(SyntheticConfig::builder().api_key("invalid\nkey").build()),
@@ -895,7 +894,7 @@ async fn rejects_invalid_credentials_and_unsupported_controls_without_io() {
                 .await,
             Err(ProviderError::ThinkingUnsupported { .. }
                 | ProviderError::FastModeUnsupported { .. }
-                | ProviderError::ZeroOutputTokenLimit)
+                | ProviderError::ZeroOutputTokenLimit { .. })
         ));
     }
 }

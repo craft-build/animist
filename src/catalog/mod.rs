@@ -10,9 +10,12 @@ use snafu::ResultExt;
 
 use crate::{Struct, provider::ModelInfo};
 
+/// Catalog failures from fetching, loading, and decoding models.dev data.
 pub use error::Error;
+/// Catalog results; see [`Error`] for the failure variants.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Default models.dev endpoint used by [`Catalog::fetch`].
 pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 /// Provider metadata only; no credentials are read and no clients are created.
@@ -34,12 +37,14 @@ pub struct ProviderInfo {
 #[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct CatalogModel {
+    /// Display name; falls back to the model ID when the source omits it.
     pub name: String,
     pub info: ModelInfo,
     /// Retains unrepresented capabilities, pricing tiers, and unknown fields.
     pub metadata: Value,
 }
 
+/// One provider's models.dev entry: metadata plus its normalized models.
 #[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct ProviderCatalog {
@@ -47,6 +52,7 @@ pub struct ProviderCatalog {
     pub models: BTreeMap<String, CatalogModel>,
 }
 
+/// Parsed models.dev catalog keyed by provider identifiers.
 #[derive(Struct!, PartialEq, Builder, Deserialize, Serialize)]
 #[builder(on(_, into))]
 pub struct Catalog {
@@ -55,7 +61,7 @@ pub struct Catalog {
 
 impl Catalog {
     /// Parses a models.dev API document, keeping provider model IDs separate.
-    /// Prices are USD per million tokens; missing rates default to zero, not known-free.
+    /// Prices are USD per million tokens; absent rates stay unknown, not free.
     /// Tier and required-thinking flags retain defaults rather than inferred rankings.
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
         models_dev::parse(bytes)
@@ -70,6 +76,7 @@ impl Catalog {
         Self::from_slice(&bytes)
     }
 
+    /// Fetches the live catalog from [`MODELS_DEV_URL`] with the caller's client.
     pub async fn fetch(client: &reqwest::Client) -> Result<Self> {
         Self::fetch_from(client, MODELS_DEV_URL).await
     }
@@ -87,10 +94,12 @@ impl Catalog {
         Self::from_slice(&bytes)
     }
 
+    /// The provider catalog keyed by models.dev identifier, e.g. `"anthropic"`.
     pub fn provider(&self, id: &str) -> Option<&ProviderCatalog> {
         self.providers.get(id)
     }
 
+    /// One model by provider and model identifier.
     pub fn model(&self, provider: &str, id: &str) -> Option<&CatalogModel> {
         self.provider(provider)?.models.get(id)
     }

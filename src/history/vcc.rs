@@ -25,7 +25,6 @@ pub enum VccExtraction {
     /// Replace generic breadcrumbs with these lines, subject to summary budgets.
     Breadcrumbs(Vec<String>),
 }
-
 /// Overrides generic breadcrumbs for a non-thinking block in the compacted prefix.
 /// Errors abort the compaction plan without changing history.
 #[async_trait]
@@ -71,7 +70,7 @@ impl VccCompactor {
 }
 
 /// VCC settings paired with a harness-specific runtime extractor.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct VccWithExtractor<E> {
     config: VccCompactor,
     extractor: E,
@@ -118,15 +117,27 @@ impl<E: VccExtractor> Compactor for VccWithExtractor<E> {
             if line.is_empty() {
                 return;
             }
-            let size = line.chars().count() + 1;
-            if chars + size > self.config.max_summary_chars && breadcrumbs.is_empty() {
-                return;
+            let mut line = line;
+            let mut size = line.chars().count() + 1;
+            if breadcrumbs.is_empty() && chars + size > self.config.max_summary_chars {
+                // The first breadcrumb is always retained, excerpted to fit.
+                let remaining = self.config.max_summary_chars.saturating_sub(chars + 1);
+                line = excerpt(&line, remaining);
+                size = line.chars().count() + 1;
+                if line.is_empty() {
+                    return;
+                }
             }
             breadcrumbs.push_back(line);
             chars += size;
             while chars > self.config.max_summary_chars && breadcrumbs.len() > 1 {
                 // Retain the first breadcrumb across successive compactions.
-                chars -= breadcrumbs.remove(1).unwrap().chars().count() + 1;
+                chars -= breadcrumbs
+                    .remove(1)
+                    .expect("len checked above one")
+                    .chars()
+                    .count()
+                    + 1;
             }
         };
         for (_, stored) in &active[..cut] {

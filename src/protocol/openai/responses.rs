@@ -1,4 +1,4 @@
-//! OpenAI Responses request translation and SSE assembly.
+//! `OpenAI` Responses request translation and SSE assembly.
 
 use std::collections::BTreeMap;
 
@@ -7,13 +7,27 @@ use flume::Sender;
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 
-use super::{OpenAiOptions, error::*, types::*};
+use super::OpenAiOptions;
+use super::error::{
+    ApiSnafu, DecodeEventSnafu, DecodeReasoningSignatureSnafu, DecodeToolArgumentsSnafu,
+    DecodeUsageSnafu, DuplicateOutputIndexSnafu, DuplicateToolItemSnafu, EncodeRequestSnafu,
+    EventReceiverSnafu, InvalidReasoningSignatureSnafu, MissingMessageContentSnafu,
+    MissingOutputIndexSnafu, MissingOutputSnafu, MissingResponsesReasoningItemSnafu,
+    MissingStringFieldSnafu, RefusalSnafu, ResponseFailedSnafu, TruncatedResponsesStreamSnafu,
+    UnknownToolItemSnafu, UnsuccessfulResponseSnafu, UnsupportedContentTypeSnafu,
+    UnsupportedLoadedToolsSnafu, UnsupportedOutputItemSnafu, UnsupportedResponsesContentSnafu,
+};
+use super::types::{
+    AddedItem, Reasoning, ReasoningSummary, ResponseContent, ResponseInclude, ResponseInput,
+    ResponseOutput, ResponseTool, ResponsesRequest, ServiceTier, StreamEvent, Usage,
+};
 use crate::{
     history::{ContentBlock, Message, MessageKind, Role, ToolContent},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
     provider::{ProviderEvent, StopReason, StreamResponse, ThinkingConfig, TokenUsage},
 };
 
+/// `OpenAI` Responses protocol adapter.
 #[derive(crate::Struct!)]
 pub struct Responses;
 
@@ -104,17 +118,20 @@ impl Protocol for Responses {
                         signature: Some(signature),
                         ..
                     } if message.role == Role::Assistant => {
-                        let item: Value = serde_json::from_str(signature)
+                        let item: ResponseInput = serde_json::from_str(signature)
                             .context(DecodeReasoningSignatureSnafu)?;
-                        ensure!(item["type"] == "reasoning", InvalidReasoningSignatureSnafu);
-                        serde_json::from_value(item).context(DecodeReasoningSignatureSnafu)?
+                        ensure!(
+                            matches!(item, ResponseInput::Reasoning { .. }),
+                            InvalidReasoningSignatureSnafu
+                        );
+                        item
                     }
                     ContentBlock::Thinking {
                         signature: None, ..
                     } if message.role == Role::Assistant => {
-                        return Err(OpenAIProtocolError::MissingResponsesReasoningItem.into());
+                        return Err(MissingResponsesReasoningItemSnafu.build().into());
                     }
-                    _ => return Err(OpenAIProtocolError::UnsupportedResponsesContent.into()),
+                    _ => return Err(UnsupportedResponsesContentSnafu.build().into()),
                 };
                 if !parts.is_empty() {
                     items.push(ResponseInput::Message {
@@ -192,87 +209,80 @@ impl Protocol for Responses {
                 .next()
                 .await?
                 .context(TruncatedResponsesStreamSnafu)?;
-            let event: Value = serde_json::from_str(&data).context(DecodeEventSnafu)?;
-            if let Some(error) = event.get("error").filter(|error| !error.is_null()) {
-                return Err(OpenAIProtocolError::Api {
+            let value: Value = serde_json::from_str(&data).context(DecodeEventSnafu)?;
+            if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+                return Err(ApiSnafu {
                     error: error.clone(),
                 }
+                .build()
                 .into());
             }
-            match event["type"]
-                .as_str()
-                .context(MissingStringFieldSnafu { field: "type" })?
-            {
-                "response.output_text.delta" => {
-                    let text = event["delta"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "delta" })?
-                        .to_owned();
+            let event: StreamEvent =
+                serde_json::from_value(value.clone()).context(DecodeEventSnafu)?;
+            #[expect(
+                clippy::match_same_arms,
+                reason = "empty arms keep ignored event kinds explicit"
+            )]
+            match event {
+                StreamEvent::OutputTextDelta { delta } => {
+                    let text = delta.context(MissingStringFieldSnafu { field: "delta" })?;
                     event_tx
                         .send_async(ProviderEvent::TextDelta { text })
                         .await
                         .context(EventReceiverSnafu)?;
                 }
-                "response.reasoning_summary_text.delta" => {
-                    let text = event["delta"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "delta" })?
-                        .to_owned();
+                StreamEvent::ReasoningSummaryTextDelta { delta } => {
+                    let text = delta.context(MissingStringFieldSnafu { field: "delta" })?;
                     event_tx
                         .send_async(ProviderEvent::ThinkingDelta { text })
                         .await
                         .context(EventReceiverSnafu)?;
                 }
-                "response.output_item.added" if event["item"]["type"] == "function_call" => {
-                    let item = &event["item"];
-                    let id = item["call_id"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "call_id" })?
-                        .to_owned();
-                    let item_id = item["id"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "id" })?;
+                StreamEvent::OutputItemAdded {
+                    item:
+                        Some(AddedItem::FunctionCall {
+                            call_id,
+                            id: item_id,
+                            name,
+                        }),
+                } => {
+                    let id = call_id.context(MissingStringFieldSnafu { field: "call_id" })?;
+                    let item_id = item_id.context(MissingStringFieldSnafu { field: "id" })?;
                     ensure!(
-                        calls.insert(item_id.to_owned(), id.clone()).is_none(),
+                        calls.insert(item_id.clone(), id.clone()).is_none(),
                         DuplicateToolItemSnafu { id: item_id }
                     );
-                    let name = item["name"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "name" })?
-                        .to_owned();
+                    let name = name.context(MissingStringFieldSnafu { field: "name" })?;
                     event_tx
                         .send_async(ProviderEvent::ToolUseStart { id, name })
                         .await
                         .context(EventReceiverSnafu)?;
                 }
-                "response.function_call_arguments.delta" => {
-                    let item_id = event["item_id"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "item_id" })?;
+                StreamEvent::OutputItemAdded { .. } => {}
+                StreamEvent::FunctionCallArgumentsDelta { item_id, delta } => {
+                    let item_id = item_id.context(MissingStringFieldSnafu { field: "item_id" })?;
                     let id = calls
-                        .get(item_id)
-                        .context(UnknownToolItemSnafu { id: item_id })?
+                        .get(&item_id)
+                        .context(UnknownToolItemSnafu {
+                            id: item_id.as_str(),
+                        })?
                         .clone();
-                    let partial_json = event["delta"]
-                        .as_str()
-                        .context(MissingStringFieldSnafu { field: "delta" })?
-                        .to_owned();
+                    let partial_json = delta.context(MissingStringFieldSnafu { field: "delta" })?;
                     event_tx
                         .send_async(ProviderEvent::ToolInputDelta { id, partial_json })
                         .await
                         .context(EventReceiverSnafu)?;
                 }
-                "response.output_item.done" => {
-                    let index = event["output_index"]
-                        .as_u64()
-                        .context(MissingOutputIndexSnafu)?;
+                StreamEvent::OutputItemDone { output_index, item } => {
+                    let index = output_index.context(MissingOutputIndexSnafu)?;
                     ensure!(
                         index >= completed && !completed_items.contains_key(&index),
                         DuplicateOutputIndexSnafu { index }
                     );
-                    let status = &event["item"]["status"];
+                    let item = item.unwrap_or_default();
+                    let status = &item["status"];
                     let blocks = if status.is_null() || status == "completed" {
-                        Some(Self::output_blocks(&event["item"])?)
+                        Some(Self::output_blocks(&item)?)
                     } else {
                         None
                     };
@@ -293,23 +303,22 @@ impl Protocol for Responses {
                         completed += 1;
                     }
                 }
-                "response.completed" | "response.incomplete" => {
-                    if !event["response"]["usage"].is_null() {
-                        let usage =
-                            serde_json::from_value::<Usage>(event["response"]["usage"].clone())
-                                .context(DecodeUsageSnafu)?
-                                .into();
+                StreamEvent::Completed { response } | StreamEvent::Incomplete { response } => {
+                    let response = response.unwrap_or_default();
+                    if !response["usage"].is_null() {
+                        let usage = serde_json::from_value::<Usage>(response["usage"].clone())
+                            .context(DecodeUsageSnafu)?
+                            .into();
                         event_tx
                             .send_async(ProviderEvent::Usage { usage })
                             .await
                             .context(EventReceiverSnafu)?;
                     }
-                    break event["response"].clone();
+                    break response;
                 }
-                "response.failed" => {
-                    if let Ok(usage) =
-                        serde_json::from_value::<Usage>(event["response"]["usage"].clone())
-                    {
+                StreamEvent::Failed { response } => {
+                    let response = response.unwrap_or_default();
+                    if let Ok(usage) = serde_json::from_value::<Usage>(response["usage"].clone()) {
                         event_tx
                             .send_async(ProviderEvent::Usage {
                                 usage: usage.into(),
@@ -317,19 +326,21 @@ impl Protocol for Responses {
                             .await
                             .context(EventReceiverSnafu)?;
                     }
-                    return Err(OpenAIProtocolError::ResponseFailed {
-                        error: event["response"]["error"].clone(),
+                    return Err(ResponseFailedSnafu {
+                        error: response["error"].clone(),
                     }
+                    .build()
                     .into());
                 }
-                "error" => return Err(OpenAIProtocolError::Api { error: event }.into()),
-                _ => {}
+                StreamEvent::Error => return Err(ApiSnafu { error: value }.build().into()),
+                StreamEvent::Unknown => {}
             }
         };
         if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-            return Err(OpenAIProtocolError::Api {
+            return Err(ApiSnafu {
                 error: error.clone(),
             }
+            .build()
             .into());
         }
         let mut blocks = Vec::new();
@@ -342,6 +353,10 @@ impl Protocol for Responses {
         {
             let item_blocks = Self::output_blocks(item)?;
             checkpoint_prefix &= item["status"].is_null() || item["status"] == "completed";
+            #[expect(
+                clippy::as_conversions,
+                reason = "usize output index fits u64 wire counters"
+            )]
             if index as u64 >= completed && checkpoint_prefix {
                 for block in &item_blocks {
                     event_tx
@@ -369,10 +384,11 @@ impl Protocol for Responses {
                 StopReason::MaxTokens
             }
             _ => {
-                return Err(OpenAIProtocolError::UnsuccessfulResponse {
+                return Err(UnsuccessfulResponseSnafu {
                     status: response["status"].clone(),
                     reason: response["incomplete_details"]["reason"].clone(),
                 }
+                .build()
                 .into());
             }
         };
@@ -420,12 +436,9 @@ impl Responses {
                                 .context(MissingStringFieldSnafu { field: "text" })?
                                 .to_owned(),
                         }),
-                        "refusal" => return Err(OpenAIProtocolError::Refusal.into()),
+                        "refusal" => return Err(RefusalSnafu.build().into()),
                         kind => {
-                            return Err(OpenAIProtocolError::UnsupportedContentType {
-                                kind: kind.into(),
-                            }
-                            .into());
+                            return Err(UnsupportedContentTypeSnafu { kind }.build().into());
                         }
                     }
                 }
@@ -467,9 +480,7 @@ impl Responses {
                 });
             }
             kind => {
-                return Err(
-                    OpenAIProtocolError::UnsupportedOutputItem { kind: kind.into() }.into(),
-                );
+                return Err(UnsupportedOutputItemSnafu { kind }.build().into());
             }
         }
         Ok(blocks)
