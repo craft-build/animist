@@ -9,7 +9,7 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::{OpenAiOptions, error::*, types::*};
 use crate::{
-    history::{ContentBlock, Message, MessageKind, Role},
+    history::{ContentBlock, Message, MessageKind, Role, ToolContent},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
     provider::{ProviderEvent, StopReason, StreamResponse, ThinkingConfig, TokenUsage},
 };
@@ -52,11 +52,36 @@ impl Protocol for Responses {
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
+                        loaded_tools,
                         ..
-                    } if message.role == Role::User => ResponseInput::FunctionCallOutput {
-                        call_id: tool_use_id.clone(),
-                        output: content.clone(),
-                    },
+                    } if message.role == Role::User => {
+                        ensure!(
+                            loaded_tools.is_empty(),
+                            UnsupportedLoadedToolsSnafu { id: tool_use_id }
+                        );
+                        let output = match content.0.as_slice() {
+                            [ToolContent::Text { text }] => ResponseOutput::Text(text.clone()),
+                            parts => ResponseOutput::Parts(
+                                parts
+                                    .iter()
+                                    .map(|part| match part {
+                                        ToolContent::Text { text } => {
+                                            ResponseContent::InputText { text: text.clone() }
+                                        }
+                                        ToolContent::Image { source } => {
+                                            ResponseContent::InputImage {
+                                                image_url: source.to_url(),
+                                            }
+                                        }
+                                    })
+                                    .collect(),
+                            ),
+                        };
+                        ResponseInput::FunctionCallOutput {
+                            call_id: tool_use_id.clone(),
+                            output,
+                        }
+                    }
                     ContentBlock::Thinking {
                         signature: Some(signature),
                         ..

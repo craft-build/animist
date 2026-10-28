@@ -11,7 +11,10 @@ use animist::{
     agent::{
         Agent, AgentConfig, AgentError, AgentEvent, AgentLayer, Cancellation, Layer, LayerImpl,
         Recovery, RunContext, RunOptions, RunStatus, Section, StepRequest,
-        tool::{ToolCall, ToolContext, ToolDefinition, ToolImpl, ToolOutput, ToolRegistry},
+        tool::{
+            IntoToolOutput, ToolCall, ToolContent, ToolContext, ToolDefinition, ToolError,
+            ToolImpl, ToolOutput, ToolRegistry,
+        },
     },
     history::{ContentBlock, Message, MessageKind, Role, StoredMessage},
     provider::{
@@ -144,6 +147,54 @@ struct EchoArgs {
 }
 
 struct Echo(Arc<AtomicUsize>);
+
+struct Screenshot;
+
+struct ScreenshotOutput {
+    label: String,
+    source: animist::history::ImageSource,
+}
+
+impl IntoToolOutput for ScreenshotOutput {
+    fn into_tool_output(self) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::builder()
+            .content(vec![
+                ToolContent::Text { text: self.label },
+                ToolContent::Image {
+                    source: self.source,
+                },
+            ])
+            .is_error(true)
+            .loaded_tools(vec!["deferred".into()])
+            .build())
+    }
+}
+
+#[async_trait]
+impl ToolImpl for Screenshot {
+    type Args = serde_json::Value;
+    type Output = ScreenshotOutput;
+    type Error = Infallible;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::builder()
+            .name("screenshot")
+            .description("Capture an image")
+            .input_schema(json!({"type":"object"}))
+            .build()
+    }
+
+    async fn call(
+        &self,
+        _context: &ToolContext<'_>,
+        _args: Self::Args,
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(ScreenshotOutput {
+            label: "Partial capture".into(),
+            source: animist::history::ImageSource::from_bytes("image/png", &[1, 2, 3]),
+        })
+    }
+}
 
 #[async_trait]
 impl ToolImpl for Echo {
@@ -299,6 +350,69 @@ async fn external_api_streams_without_tools_and_preserves_metadata() {
 }
 
 #[tokio::test]
+async fn typed_rich_output_survives_events_history_revisions_and_next_request() {
+    let mut tools = ToolRegistry::default();
+    tools.register(Screenshot).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![call("rich", "screenshot", json!({}))],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            requests.clone(),
+        ))
+        .tools(tools)
+        .build();
+    let (tx, rx) = flume::unbounded();
+    let report = agent
+        .run(input(), RunOptions::builder().events(tx).build())
+        .await
+        .unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    assert_eq!(report.stats.tool_calls, 1);
+    let output = rx
+        .try_iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolFinished { call, output } => {
+                assert_eq!(call.id, "rich");
+                Some(output)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert!(matches!(output.content.0.as_slice(), [
+        ToolContent::Text { text },
+        ToolContent::Image { .. }
+    ] if text == "Partial capture"));
+    let expected = ContentBlock::ToolResult {
+        tool_use_id: "rich".into(),
+        content: output.content,
+        is_error: output.is_error,
+        loaded_tools: output.loaded_tools,
+    };
+    assert!(matches!(&expected, ContentBlock::ToolResult {
+        is_error: true, loaded_tools, ..
+    } if loaded_tools == &["deferred"]));
+    assert_eq!(requests.lock().await[1][2].content, vec![expected.clone()]);
+    let snapshot = agent.history().snapshot().await;
+    let result = &snapshot.entries()[2];
+    assert_eq!(result.revisions().len(), 1);
+    assert_eq!(result.latest().message().content, vec![expected.clone()]);
+    assert!(matches!(&result.verbatim().message().content[0],
+        ContentBlock::ToolResult { is_error: true, content, .. }
+        if matches!(content.0.as_slice(), [ToolContent::Text { text }] if text.contains("interrupted"))
+    ));
+    let entries = serde_json::from_slice(&serde_json::to_vec(snapshot.entries()).unwrap()).unwrap();
+    let restored = animist::history::History::from_entries(entries);
+    assert_eq!(restored.current().await[2].content, vec![expected]);
+}
+
+#[tokio::test]
 async fn typed_tools_run_and_request_is_prepared_again() {
     let count = Arc::new(AtomicUsize::new(0));
     let mut tools = ToolRegistry::default();
@@ -325,7 +439,7 @@ async fn typed_tools_run_and_request_is_prepared_again() {
     assert_eq!(report.stats.usage.input, 20);
     assert_eq!(requests.lock().await[1].len(), 3);
     assert!(
-        matches!(&requests.lock().await[1][2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == "tool output")
+        matches!(&requests.lock().await[1][2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == &"tool output".into())
     );
 }
 
@@ -675,7 +789,7 @@ async fn child_tools_cannot_bypass_authorization() {
     agent.run(input(), RunOptions::default()).await.unwrap();
     assert_eq!(count.load(Ordering::Relaxed), 0);
     assert!(
-        matches!(&agent.history().current().await[2].content[0], ContentBlock::ToolResult { content, is_error: true, .. } if content == "nested denial")
+        matches!(&agent.history().current().await[2].content[0], ContentBlock::ToolResult { content, is_error: true, .. } if content == &"nested denial".into())
     );
 }
 
@@ -732,7 +846,7 @@ async fn dropping_tool_execution_leaves_replay_safe_interrupted_results() {
     let history = agent.history().current().await;
     assert_eq!(history.len(), 3);
     assert!(
-        matches!(&history[2].content[0], ContentBlock::ToolResult { is_error: true, content, .. } if content.contains("interrupted"))
+        matches!(&history[2].content[0], ContentBlock::ToolResult { is_error: true, content, .. } if matches!(&content.0[..], [animist::history::ToolContent::Text { text }] if text.contains("interrupted")))
     );
     agent.shutdown().await.unwrap();
 }

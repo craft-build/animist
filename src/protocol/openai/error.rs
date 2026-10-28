@@ -63,6 +63,10 @@ pub enum OpenAIProtocolError {
     UnsupportedChatContent,
     #[snafu(display("Content cannot be replayed through Responses"))]
     UnsupportedResponsesContent,
+    #[snafu(display("Chat Completions cannot represent image output for tool call {id}"))]
+    UnsupportedChatToolImage { id: String },
+    #[snafu(display("Tool activation metadata is unsupported for tool call {id}"))]
+    UnsupportedLoadedTools { id: String },
     #[snafu(display("Unsupported completion choice index {index}"))]
     MultipleChoices { index: u32 },
     #[snafu(display("The model refused the request"))]

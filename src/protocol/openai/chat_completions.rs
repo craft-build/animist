@@ -9,7 +9,7 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::{ChatReasoningField, ChatTokenLimit, OpenAiOptions, error::*, types::*};
 use crate::{
-    history::{ContentBlock, Message, MessageKind, Role},
+    history::{ContentBlock, Message, MessageKind, Role, ToolContent},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
     provider::{ProviderEvent, StopReason, StreamResponse, TokenUsage},
 };
@@ -114,12 +114,35 @@ impl Protocol for ChatCompletions {
                 if let Some(ContentBlock::ToolResult {
                     tool_use_id,
                     content,
+                    loaded_tools,
                     ..
                 }) = segment.last()
                 {
+                    ensure!(
+                        loaded_tools.is_empty(),
+                        UnsupportedLoadedToolsSnafu { id: tool_use_id }
+                    );
+                    let mut parts = Vec::new();
+                    for part in &content.0 {
+                        match part {
+                            ToolContent::Text { text } => {
+                                parts.push(ChatContent::Text { text: text.clone() });
+                            }
+                            ToolContent::Image { .. } => {
+                                return Err(OpenAIProtocolError::UnsupportedChatToolImage {
+                                    id: tool_use_id.clone(),
+                                }
+                                .into());
+                            }
+                        }
+                    }
+                    let content = match parts.as_slice() {
+                        [ChatContent::Text { text }] => ChatAssistantContent::Text(text.clone()),
+                        _ => ChatAssistantContent::Parts(parts),
+                    };
                     messages.push(ChatMessage::Tool {
                         tool_call_id: tool_use_id.clone(),
-                        content: content.clone(),
+                        content,
                     });
                 }
             }

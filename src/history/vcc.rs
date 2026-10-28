@@ -8,7 +8,7 @@ use crate::{Enum, StructWithCustomDefault};
 
 use super::{
     CompactionEdit, CompactionPlan, Compactor, ContentBlock, HistorySnapshot, Message, MessageKind,
-    Role, StoredMessage,
+    Role, StoredMessage, ToolContent,
 };
 
 const SUMMARY_TAG: &str = "animist.compaction";
@@ -175,10 +175,21 @@ impl<E: VccExtractor> Compactor for VccWithExtractor<E> {
                         content,
                         is_error,
                         ..
-                    } => format!(
-                        "Tool result ({tool_use_id}){}: {content}",
-                        if *is_error { " (error)" } else { "" }
-                    ),
+                    } => {
+                        let excerpt = content
+                            .0
+                            .iter()
+                            .map(|part| match part {
+                                ToolContent::Text { text } => text.as_str(),
+                                ToolContent::Image { .. } => "Image omitted",
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!(
+                            "Tool result ({tool_use_id}){}: {excerpt}",
+                            if *is_error { " (error)" } else { "" }
+                        )
+                    }
                     ContentBlock::Image { .. } => "Image omitted".into(),
                     ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {
                         continue;

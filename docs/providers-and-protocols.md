@@ -142,6 +142,23 @@ Adapters must reject reasoning they cannot represent, including unsigned
 thinking without a supported replay field. Redacted payloads are not disposable.
 Any lossy history conversion must be an explicit caller operation.
 
+Tool results use the shared non-recursive `history::ToolContent` representation.
+Anthropic Messages emits text/image blocks inside `tool_result.content` and
+validates inline image media types just as it does for user images. Responses
+emits `input_text`/`input_image` parts inside `function_call_output.output`.
+Both preserve part order and support remote URLs and inline images.
+Chat Completions supports text-only tool results and returns
+`UnsupportedChatToolImage` with the call ID for images; it never promotes them
+to unrelated user messages. Single text results retain the OpenAI string wire
+shape; empty or multiple text parts use arrays.
+
+The common `is_error` flag is retained in execution/history and sent natively
+by Anthropic. OpenAI's function-output wire formats have no equivalent flag;
+their output carries the supplied content without inventing a wire field.
+All implemented adapters reject nonempty `loaded_tools`: deferred activation
+is not implemented, and activation metadata must not disappear silently.
+Concrete protocol errors remain linked through `ProtocolError`/`ProviderError`.
+
 Keep request work owned by the streaming future so dropping it cancels the
 request. Errors return through the existing result path; an additional error
 event is not required merely because partial events were already emitted.

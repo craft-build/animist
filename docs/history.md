@@ -31,6 +31,33 @@ The entry serialization shape replaces the earlier tagged
 `Active`/`Inactive`/`Altered` representation; no legacy-format migration is
 provided.
 
+### Tool-result content compatibility
+
+`ContentBlock::ToolResult::content` is now `ToolContents` rather than `String`.
+It serializes as an ordered array of tagged `ToolContent` blocks:
+
+```json
+[
+  {"type": "text", "text": "Screenshot"},
+  {"type": "image", "source": {"type": "url", "url": "https://example.com/image.png"}}
+]
+```
+
+Deserialization also accepts the legacy string form and converts it to a single
+text block, including empty strings. Saving loaded history migrates originals
+and revisions to arrays; older readers that require strings cannot read these
+new saves. Upgrade readers before writing the new format and retain a backup
+if rollback is needed. There is no lossless downgrade for image results.
+This does not migrate the older entry-level tagged representation above.
+
+The Rust API is source-breaking for direct field construction: use
+`content: text.into()` or `content: vec![ToolContent::Text { text }].into()`.
+Images, errors, and activation metadata remain intact in stored originals and
+revisions. Compaction only changes them when explicitly requested by the caller.
+VCC emits omission markers for tool-result images in its lossy summary, while
+retaining the full removed sources and revisions; protected tail content is
+unchanged.
+
 ## Alteration
 
 `Alteration::call()` receives the latest active `StoredMessage`, including its

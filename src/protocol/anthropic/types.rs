@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{AnthropicEffort, AnthropicThinking};
-use crate::history::{ImageSource, Role};
+use crate::history::{ImageSource, Role, ToolContents};
 
 #[derive(crate::Struct!, Builder, Serialize)]
 #[builder(on(_, into))]
@@ -54,7 +54,7 @@ pub(super) enum InputBlock {
     },
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolContents,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },

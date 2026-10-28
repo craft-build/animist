@@ -106,9 +106,40 @@ errors and explicit stop decisions terminate the run. Tool implementations are
 never retried automatically. Execution is sequential by default and currently the
 only scheduling mode; conflict-aware parallel execution is a follow-up.
 
-Tool output is deliberately text-only while the cross-cutting rich-result work is
-pending. `String` and `ToolOutput` implement `IntoToolOutput`. Do not stringify
-images as a substitute for the protocol/history change.
+Tool output uses `ToolContents`, an ordered collection of `ToolContent::Text`
+and `ToolContent::Image { source: ImageSource }`. Conversation blocks such as
+calls, results, and reasoning cannot be nested inside output. `String` and
+`ToolOutput` implement `IntoToolOutput`; custom native outputs can implement
+that trait without implementing Serde:
+
+```rust
+use animist::{
+    agent::tool::{ToolContent, ToolOutput},
+    history::ImageSource,
+};
+
+let output = ToolOutput::builder()
+    .content(vec![
+        ToolContent::Text { text: "Screenshot".into() },
+        ToolContent::Image {
+            source: ImageSource::from_bytes("image/png", &[1, 2, 3]),
+        },
+    ])
+    .build();
+```
+
+Text-only builders still accept `.content("text")` or `.content(String)`.
+`ToolContents` wraps a public `Vec<ToolContent>` in `.0`; there is no implicit
+lossy text conversion. JSON/structured output is not a separate capability:
+tools choose how to render it as text, and no automatic serialization is required.
+
+`is_error`, content order, call identity, and `loaded_tools` survive events,
+result revisions, and persisted history. Activation metadata does not activate
+or register executors; all current protocol adapters reject nonempty
+`loaded_tools` rather than advertise unsupported deferred-tool behavior.
+Anthropic Messages and OpenAI Responses support tool-result images; Chat
+Completions rejects them. UI presentation belongs in the consumer's event
+adapter or message display metadata, not in model-visible content.
 
 ## Execution, history, and cancellation
 
@@ -169,7 +200,7 @@ without a provider usage report cannot be charged locally.
 
 ## Follow-ups
 
-See `followup/` for executable task prompts covering sampling, rich results,
+See `followup/` for executable task prompts covering sampling,
 partial replay, replay validation, scheduling, and application-boundary audits.
 Craft and Revelry migrations and additional provider integrations are outside
 this workstream.

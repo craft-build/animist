@@ -39,6 +39,52 @@ impl ImageSource {
     }
 }
 
+/// Model-visible tool output, without recursive conversation blocks.
+#[derive(Enum!, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolContent {
+    Text { text: String },
+    Image { source: ImageSource },
+}
+
+/// Ordered tool output; accepts legacy strings when deserializing.
+#[derive(Struct!, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ToolContents(pub Vec<ToolContent>);
+
+impl From<String> for ToolContents {
+    fn from(text: String) -> Self {
+        Self(vec![ToolContent::Text { text }])
+    }
+}
+
+impl From<&str> for ToolContents {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
+}
+
+impl From<Vec<ToolContent>> for ToolContents {
+    fn from(content: Vec<ToolContent>) -> Self {
+        Self(content)
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolContents {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Text(String),
+            Blocks(Vec<ToolContent>),
+        }
+        Ok(match Stored::deserialize(deserializer)? {
+            Stored::Text(text) => text.into(),
+            Stored::Blocks(blocks) => blocks.into(),
+        })
+    }
+}
+
 #[derive(Enum!, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
@@ -62,7 +108,7 @@ pub enum ContentBlock {
     },
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolContents,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

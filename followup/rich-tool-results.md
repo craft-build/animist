@@ -1,5 +1,12 @@
 # Preserve rich tool output through execution, history, and protocols
 
+**Status: implemented.** Shared text/image output now flows through typed tools,
+events, history revisions/restoration, compaction, and supported protocol wire
+formats. Legacy string content is accepted on load; new history writes arrays.
+Chat Completions images and all adapters' deferred activation metadata fail
+explicitly. See `tests/rich_tool_results.rs` and the rich-output agent test.
+The original task below is retained as historical context.
+
 Work in Animist only. Read AGENTS.md, docs/agents.md, docs/history.md, and
 docs/providers-and-protocols.md. Craft's image and MCP tools are reference
 consumers, not migration targets.

@@ -8,7 +8,7 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::{AnthropicOptions, error::*, types::*};
 use crate::{
-    history::{ContentBlock, ImageSource, Message, MessageKind, Role},
+    history::{ContentBlock, ImageSource, Message, MessageKind, Role, ToolContent},
     protocol::{Protocol, ProtocolInput, Result, sse::Events},
     provider::{ProviderEvent, StopReason, StreamResponse, TokenUsage},
 };
@@ -87,6 +87,20 @@ impl Protocol for Messages {
                         loaded_tools,
                     } if message.role == Role::User => {
                         ensure!(loaded_tools.is_empty(), UnsupportedLoadedToolsSnafu);
+                        for part in &content.0 {
+                            if let ToolContent::Image {
+                                source: ImageSource::Base64 { media_type, .. },
+                            } = part
+                            {
+                                ensure!(
+                                    matches!(
+                                        media_type.as_str(),
+                                        "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+                                    ),
+                                    UnsupportedImageMediaTypeSnafu { media_type }
+                                );
+                            }
+                        }
                         InputBlock::ToolResult {
                             tool_use_id: tool_use_id.clone(),
                             content: content.clone(),

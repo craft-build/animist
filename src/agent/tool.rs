@@ -9,6 +9,7 @@ use snafu::{ResultExt, Snafu};
 
 use super::{Agent, Result, RunContext};
 use crate::Struct;
+pub use crate::history::{ToolContent, ToolContents};
 pub use crate::provider::Tool as ToolDefinition;
 
 #[derive(Debug, Snafu)]
@@ -33,13 +34,14 @@ pub struct ToolCall {
     pub input: Value,
 }
 
-/// Text-only until the rich tool-result protocol follow-up is implemented.
 #[derive(Struct!, Builder)]
 #[builder(on(_, into))]
 pub struct ToolOutput {
-    pub content: String,
+    pub content: ToolContents,
     #[builder(default)]
     pub is_error: bool,
+    #[builder(default)]
+    pub loaded_tools: Vec<String>,
 }
 
 pub trait IntoToolOutput: Send {

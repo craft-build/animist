@@ -377,7 +377,7 @@ impl Agent {
                     tool_use_id: call.id.clone(),
                     content: output.content,
                     is_error: output.is_error,
-                    loaded_tools: Vec::new(),
+                    loaded_tools: output.loaded_tools,
                 };
                 result_message.message_mut().content = results.clone();
                 self.history

@@ -9,7 +9,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use bon::Builder;
-pub use message::{ContentBlock, ImageSource, Message, MessageKind, Role};
+pub use message::{
+    ContentBlock, ImageSource, Message, MessageKind, Role, ToolContent, ToolContents,
+};
 use snafu::{OptionExt, ResultExt, Snafu, ensure};
 pub use stored::{HistoryEntry, StoredMessage};
 use tokio::sync::RwLock;

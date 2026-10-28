@@ -62,7 +62,7 @@ pub(super) enum ChatMessage {
     },
     Tool {
         tool_call_id: String,
-        content: String,
+        content: ChatAssistantContent,
     },
 }
 
@@ -159,12 +159,19 @@ pub(super) enum ResponseInput {
     },
     FunctionCallOutput {
         call_id: String,
-        output: String,
+        output: ResponseOutput,
     },
     Reasoning {
         #[serde(flatten)]
         fields: BTreeMap<String, Value>,
     },
+}
+
+#[derive(crate::Enum!, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ResponseOutput {
+    Text(String),
+    Parts(Vec<ResponseContent>),
 }
 
 #[derive(crate::Enum!, Serialize, Deserialize)]
