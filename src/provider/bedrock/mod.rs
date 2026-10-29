@@ -111,6 +111,15 @@ impl std::fmt::Debug for Bedrock {
 }
 
 impl Bedrock {
+    /// Replaces the runtime HTTP client; callers must disable redirects.
+    /// Client timeouts apply per attempt; `max_attempts` still limits HTTP retries.
+    /// Transport errors, including timeouts, are never retried.
+    #[must_use]
+    pub fn with_client(mut self, client: reqwest::Client) -> Self {
+        self.client = client;
+        self
+    }
+
     /// Runs AWS credential discovery, then binds the provider to its settings.
     pub async fn new(config: BedrockConfig) -> Result<Self> {
         let mut loader = aws_config::defaults(BehaviorVersion::latest());

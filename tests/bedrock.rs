@@ -838,6 +838,63 @@ async fn retries_are_bounded_and_resolve_and_sign_with_current_credentials() {
 }
 
 #[tokio::test]
+async fn an_injected_clients_timeout_cancels_a_stalled_request_without_retrying() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider = Bedrock::from_sdk_config(
+        BedrockConfig::builder()
+            .endpoint_url(format!("http://{}", listener.local_addr().unwrap()))
+            .build(),
+        &static_sdk(),
+    )
+    .unwrap()
+    .with_client(
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap(),
+    );
+    let (tx, _rx) = flume::unbounded();
+    let request = async {
+        provider
+            .stream_message(
+                &model(),
+                &messages(),
+                "",
+                &[],
+                &tx,
+                RequestOptions::default(),
+            )
+            .await
+            .unwrap_err()
+    };
+    let stalled = async {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let recorded = read_request(&mut socket).await;
+        let mut byte = [0];
+        assert_eq!(socket.read(&mut byte).await.unwrap(), 0);
+        assert!(
+            timeout(Duration::from_millis(150), listener.accept())
+                .await
+                .is_err()
+        );
+        recorded
+    };
+    let (error, recorded) = timeout(Duration::from_secs(3), async {
+        tokio::join!(request, stalled)
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        error,
+        ProviderError::Bedrock {
+            source: BedrockError::Transport { source }
+        } if source.is_timeout()
+    ));
+    assert_eq!(recorded.path, "/anthropic/v1/messages");
+}
+
+#[tokio::test]
 async fn http_errors_preserve_request_ids_types_and_raw_bodies_without_redirects() {
     for status in [302_u16, 403, 429, 503] {
         let body = b"{\"error\":\"details\"}\xff".to_vec();

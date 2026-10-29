@@ -138,9 +138,13 @@ These errors transparently enter `ProviderError::Bedrock`; protocol errors keep
 their existing concrete protocol error chain.
 
 The HTTP client disables redirects and has a 10-second connection timeout, with
-no overall generation timeout. There is currently no custom HTTP-client
-injection API. AWS authentication settings, runtime HTTP state, and serializable
-provider settings remain separate.
+no overall generation timeout. `with_client(reqwest::Client)` replaces that
+client without changing settings or `max_attempts`. Injected clients **must**
+disable redirects with `redirect(reqwest::redirect::Policy::none())`; reqwest
+cannot inspect or override an existing client's policy. Client timeouts apply
+per attempt, not across retry backoff, and timeout errors are not retried.
+AWS authentication settings, runtime HTTP state, and serializable provider
+settings remain separate.
 
 ## Validation
 
