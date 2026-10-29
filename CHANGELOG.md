@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/craft-build/animist/compare/v0.6.0...v0.7.0) - 2026-10-29
+
+### Added
+
+- [**breaking**] retain tool names on history results
+- [**breaking**] add the Bedrock Converse protocol and EventStream assembly
+- [**breaking**] discover Bedrock models through the signed control plane
+- allow injecting the Bedrock HTTP client
+- *(agent)* [**breaking**] turn executor panics into structured tool failures
+- *(agent)* [**breaking**] complete tool calls through ToolDecision::Respond
+- *(history)* [**breaking**] add bounded incremental change feed
+- *(agent)* add direct tool testing harness
+- *(agent)* [**breaking**] add concurrent child dispatch via dispatch_all
+- *(agent)* [**breaking**] add step_end layer hook for durable step-boundary messages
+
+### Fixed
+
+- [**breaking**] address full-crate review findings
+- *(history)* record squashed entries in the change feed
+- *(agent)* squash completed tool-result revisions
+
+### Other
+
+- *(deps)* bump dependencies
+- *(followups)* record F06 completion
+- *(docs)* next followup set
+
 ## [0.6.0](https://github.com/craft-build/animist/compare/v0.5.0...v0.6.0) - 2026-10-28
 
 ### Added
