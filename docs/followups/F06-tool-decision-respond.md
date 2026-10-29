@@ -48,4 +48,16 @@ A decision variant that completes the call with a supplied, model-visible
 
 ## Completion note
 
-_(fill in when done)_
+Implemented as `ToolDecision::Respond { output: ToolOutput }`. A responded
+call short-circuits later layers exactly like `Deny`, never reaches the
+executor, and still flows through `post_tool_exec` and `ToolFinished`. It is
+admitted against `max_tool_calls` but does not count as an executed call in
+`RunStats::tool_calls`, and no `ToolStarted` fires. `ToolOutput` gained
+`PartialEq, Eq` so `ToolDecision` keeps its derives. Covered by tests for
+executor skipping, call-order result slots with `is_error = false`, post-hook
+visibility and transformation, skipped later `pre_tool_exec`, and both sides of
+the stats/limits contract. Validation passed: `cargo fmt --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`,
+`cargo test --features bedrock`, and `cargo doc --no-deps`. Independent review
+returned no findings above P3.
+Not yet released; Craft cleanup remains a downstream followup after release.
