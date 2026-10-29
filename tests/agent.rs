@@ -396,6 +396,7 @@ async fn run_sampling_controls_reach_request_preparation_on_every_step() {
 #[tokio::test]
 async fn external_api_streams_without_tools_and_preserves_metadata() {
     let agent = agent(vec![response(vec![text("done")], StopReason::EndTurn)]);
+    let version = agent.history().snapshot().await.generation();
     let (tx, rx) = flume::bounded(16);
     let mut input = input();
     input.tags_mut().insert("test".into(), "retained".into());
@@ -411,6 +412,22 @@ async fn external_api_streams_without_tools_and_preserves_metadata() {
     assert_eq!(
         agent.history().snapshot().await.entries()[0].latest(),
         &input
+    );
+    let changes = agent.history().changes_since(&version).await.unwrap();
+    let snapshot = agent.history().snapshot().await;
+    assert_eq!(changes.generation(), snapshot.generation());
+    assert_eq!(
+        changes.changes(),
+        &[
+            animist::history::HistoryChange::Appended {
+                index: 0,
+                entry: snapshot.entries()[0].clone(),
+            },
+            animist::history::HistoryChange::Appended {
+                index: 1,
+                entry: snapshot.entries()[1].clone(),
+            },
+        ]
     );
     let events: Vec<_> = rx.try_iter().collect();
     assert!(matches!(events.first(), Some(AgentEvent::Provider { .. })));

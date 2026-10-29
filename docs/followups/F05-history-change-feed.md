@@ -53,4 +53,19 @@ the full-rewrite fallback for the stale-token error.
 
 ## Completion note
 
-_(fill in when done)_
+Implemented with opaque, history-scoped `HistoryVersion` cursors,
+`HistorySnapshot::generation()`, and atomic `History::changes_since()` reads.
+The feed retains at most 1024 events, evicts whole commits, and reports
+`ChangesTooOld` for snapshot fallback or `ForeignVersion` for another history.
+Append, revision, deactivation, insertion ordering, restore, retention,
+concurrent readers, and agent commits have public integration coverage.
+See `docs/history.md` for replay indices and persistence semantics.
+
+Breaking API addition: exhaustive `HistoryError` matches must handle the two
+new variants; release under `feat!:`. Unreleased; Craft cleanup remains pending.
+
+Validation passed: `cargo fmt --check`, strict all-target/all-feature Clippy,
+`cargo test`, `cargo test --features bedrock`, `cargo doc --no-deps`, and
+`git diff --check`. Review verdict: clean against baseline `e639eb75`.
+When integrating F04, connect revision squashing to this feed with an exact
+replacement event or explicit cursor invalidation.

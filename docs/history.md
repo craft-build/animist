@@ -279,6 +279,39 @@ For multiple tool handlers, compose them within one extractor.
 
 ## Atomicity and concurrency
 
+`HistorySnapshot::generation()` returns an opaque `HistoryVersion`. Save the
+snapshot entries and cursor together, then call `history.changes_since(&cursor)`.
+The returned `HistoryChanges` contains an ordered `changes()` slice and a
+`generation()` cursor captured under the same read lock. Persist the whole
+response before advancing the cursor; later mutations belong to the next read.
+An unchanged history returns no events and the same cursor.
+
+Replay `HistoryChange` events in order: `Appended` adds an entry at the end,
+`Revised` appends a stored revision, `Deactivated` clears activation without
+removing data, and `Inserted` inserts an entry. Each index refers to the entry
+list at that individual event, not the final snapshot or the compaction plan.
+An insertion shifts entries at and after its index right by one. Within a
+compaction commit, revisions and deactivations appear in plan order first,
+then insertions in ascending snapshot position, preserving plan order for ties.
+Insertion indices include the shifts from preceding insertion events.
+Insertions at the end emit `Appended`, including those committed by the agent.
+
+The feed retains at most 1024 events, evicting whole commits. A single commit
+larger than that is not retained and clears older events. Retention bounds event
+count, not bytes: stored message payload sizes remain caller-controlled.
+`HistoryError::ChangesTooOld` means the cursor predates retained coverage;
+take and persist a full snapshot, then resume from its cursor. Readers never see
+part of a commit, and reads do not consume events for other readers.
+Failed, cancelled, conflicting, and empty edits produce no events or new cursor.
+Agent commits use the same feed as direct history mutations.
+
+Cursors are runtime-only, scoped to one history and its cloned handles.
+`from_entries` starts a fresh feed with no events for restored entries.
+Passing a cursor from any other history, including a restored copy, returns
+`HistoryError::ForeignVersion`. Cursors are neither serializable nor comparable
+across histories for ordering; only equality is meaningful.
+Adding these error variants breaks exhaustive downstream `HistoryError` matches.
+
 Both operations snapshot under a short read lock, await callbacks without a
 history lock, validate/build the result, and commit under a short write lock.
 Callbacks can read the same history without deadlocking.

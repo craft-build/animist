@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use animist::history::{
-    Alteration, CompactionEdit, CompactionPlan, Compactor, ContentBlock, History, HistoryEntry,
-    HistoryError, HistorySnapshot, Message, MessageKind, Role, StoredMessage,
+    Alteration, CompactionEdit, CompactionPlan, Compactor, ContentBlock, History, HistoryChange,
+    HistoryEntry, HistoryError, HistorySnapshot, Message, MessageKind, Role, StoredMessage,
 };
 use async_trait::async_trait;
 use tokio::sync::Notify;
@@ -35,6 +35,218 @@ impl Alteration for Rewrite {
         *revised.message_mut() = message(self.0);
         Ok(Some(revised))
     }
+}
+
+#[tokio::test]
+async fn change_feed_preserves_metadata_and_orders_edits_before_shifted_insertions() {
+    let history = History::new();
+    let start = history.snapshot().await.generation();
+    history.add_stored(stored("a")).await;
+    history.add_stored(stored("b")).await;
+    history.alter(Rewrite("revised")).await.unwrap();
+    history
+        .compact(Plan(vec![
+            CompactionEdit::Insert {
+                before: 2,
+                message: stored("end"),
+            },
+            CompactionEdit::Insert {
+                before: 0,
+                message: stored("first"),
+            },
+            CompactionEdit::Replace {
+                index: 1,
+                message: stored("replacement"),
+            },
+            CompactionEdit::Insert {
+                before: 0,
+                message: stored("second"),
+            },
+            CompactionEdit::Remove { index: 0 },
+        ]))
+        .await
+        .unwrap();
+    let entry = |text| HistoryEntry::builder().source(stored(text)).build();
+    let changes = history.changes_since(&start).await.unwrap();
+    assert_eq!(
+        changes.changes(),
+        &[
+            HistoryChange::Appended {
+                index: 0,
+                entry: entry("a")
+            },
+            HistoryChange::Appended {
+                index: 1,
+                entry: entry("b")
+            },
+            HistoryChange::Revised {
+                index: 0,
+                message: stored("revised")
+            },
+            HistoryChange::Revised {
+                index: 1,
+                message: stored("revised")
+            },
+            HistoryChange::Revised {
+                index: 1,
+                message: stored("replacement")
+            },
+            HistoryChange::Deactivated { index: 0 },
+            HistoryChange::Inserted {
+                index: 0,
+                entry: entry("first")
+            },
+            HistoryChange::Inserted {
+                index: 1,
+                entry: entry("second")
+            },
+            HistoryChange::Appended {
+                index: 4,
+                entry: entry("end")
+            },
+        ]
+    );
+    assert_eq!(changes.generation(), history.snapshot().await.generation());
+    assert_eq!(
+        history
+            .changes_since(&changes.generation())
+            .await
+            .unwrap()
+            .changes(),
+        []
+    );
+    let before_noop = changes.generation();
+    history.compact(Plan(vec![])).await.unwrap();
+    assert_eq!(before_noop, history.snapshot().await.generation());
+    assert!(
+        history
+            .compact(Plan(vec![CompactionEdit::Remove { index: 99 }]))
+            .await
+            .is_err()
+    );
+    assert_eq!(before_noop, history.snapshot().await.generation());
+}
+
+#[tokio::test]
+async fn change_cursors_expire_at_whole_commit_boundaries_and_restores_start_fresh() {
+    let history = History::new();
+    let start = history.snapshot().await.generation();
+    history
+        .compact(Plan(vec![
+            CompactionEdit::Insert {
+                before: 0,
+                message: stored("first of pair"),
+            },
+            CompactionEdit::Insert {
+                before: 0,
+                message: stored("second of pair"),
+            },
+        ]))
+        .await
+        .unwrap();
+    let after_pair = history.snapshot().await.generation();
+    for _ in 0..1022 {
+        history.add_stored(stored("a")).await;
+    }
+    assert_eq!(
+        history.changes_since(&start).await.unwrap().changes().len(),
+        1024
+    );
+    history.add_stored(stored("overflow")).await;
+    assert!(matches!(
+        history.changes_since(&start).await,
+        Err(HistoryError::ChangesTooOld { .. })
+    ));
+    let retained = history.changes_since(&after_pair).await.unwrap();
+    assert_eq!(retained.changes().len(), 1023);
+    assert!(matches!(
+        retained.changes().first(),
+        Some(HistoryChange::Appended { index: 2, .. })
+    ));
+    let before_large_commit = history.snapshot().await.generation();
+    history.alter(Rewrite("large")).await.unwrap();
+    assert!(matches!(
+        history.changes_since(&before_large_commit).await,
+        Err(HistoryError::ChangesTooOld { .. })
+    ));
+    let snapshot = history.snapshot().await;
+    assert_eq!(
+        history
+            .changes_since(&snapshot.generation())
+            .await
+            .unwrap()
+            .changes(),
+        []
+    );
+    let restored = History::from_entries(snapshot.entries().to_vec());
+    assert!(matches!(
+        restored.changes_since(&snapshot.generation()).await,
+        Err(HistoryError::ForeignVersion { .. })
+    ));
+    assert_eq!(
+        restored
+            .changes_since(&restored.snapshot().await.generation())
+            .await
+            .unwrap()
+            .changes(),
+        []
+    );
+    history.add_stored(stored("after oversized")).await;
+    assert_eq!(
+        history
+            .clone()
+            .changes_since(&snapshot.generation())
+            .await
+            .unwrap()
+            .changes()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn concurrent_change_readers_receive_consistent_cursors_and_complete_commits() {
+    let history = History::new();
+    let reader = |history: History| async move {
+        let mut version = history.snapshot().await.generation();
+        let mut next_index = 0;
+        while next_index < 100 {
+            let changes = history.changes_since(&version).await.unwrap();
+            assert_eq!(changes.changes().len() % 2, 0, "a commit was split");
+            for change in changes.changes() {
+                let HistoryChange::Appended { index, .. } = change else {
+                    panic!("unexpected non-append event: {change:?}");
+                };
+                assert_eq!(*index, next_index);
+                next_index += 1;
+            }
+            version = changes.generation();
+            tokio::task::yield_now().await;
+        }
+    };
+    let writer = async {
+        for pair in 0..50 {
+            history
+                .compact(Plan(vec![
+                    CompactionEdit::Insert {
+                        before: pair * 2,
+                        message: stored("first of pair"),
+                    },
+                    CompactionEdit::Insert {
+                        before: pair * 2,
+                        message: stored("second of pair"),
+                    },
+                ]))
+                .await
+                .unwrap();
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(reader(history.clone()), reader(history.clone()), writer);
+    })
+    .await
+    .unwrap();
 }
 
 struct Plan(Vec<CompactionEdit>);
