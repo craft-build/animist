@@ -146,7 +146,7 @@ impl ToolHarness {
             () = self.run.tool_halt.cancelled() => Err(ToolError::Execution {
                 source: Box::new(super::error::CancelledSnafu.build()),
             }),
-            result = tool.execute(&context, call.input.clone()) => result,
+            result = tool.execute_catching_panics(&context, call.input.clone()) => result,
         };
         if let Some(reason) = self.run.stopped.lock().await.clone() {
             return Err(ToolError::Execution {

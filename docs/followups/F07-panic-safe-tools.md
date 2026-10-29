@@ -46,4 +46,23 @@ The behaviour is documented and tested.
 
 ## Completion note
 
-_(fill in when done)_
+Implemented on `f07-panic-safe-tools` (unreleased). Executor futures are polled
+in place behind a shared unwind boundary used by the agent and tool harness.
+Panics become `ToolError::Panicked { message }`, model-visible error results,
+failure events, and report entries; sibling tools and subsequent inference
+continue. String payloads retain their text; opaque payloads use a stable fallback.
+
+Layer hooks remain outside their own executor boundary. A child hook panic
+crossing its parent executor is caught as a parent failure. Both behaviors,
+both dispatch modes, output conversion panics, and timeout-enabled execution
+are covered by integration tests and documented in `docs/agents.md`.
+
+Validation passed: `cargo fmt --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`,
+`cargo test --features bedrock`, `cargo test --features testing --test tool_harness`,
+and `cargo doc --no-deps`. The required full-diff review returned a clean verdict;
+the reviewer also verified `git diff --check`.
+
+Breaking API change: the exhaustive `ToolError` enum gains `Panicked`; use
+`feat!:`/`fix!:` when committing for release-plz. Craft cleanup remains deferred
+until release.

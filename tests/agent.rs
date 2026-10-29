@@ -3,6 +3,7 @@
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    panic::AssertUnwindSafe,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -26,6 +27,7 @@ use animist::{
 };
 use async_trait::async_trait;
 use flume::Sender;
+use futures_util::FutureExt;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -3080,6 +3082,194 @@ async fn argument_error_retains_structured_source_in_events() {
         .unwrap();
     assert!(rx.try_iter().any(|event| matches!(event, AgentEvent::ToolFailed { error, .. }
         if matches!(&*error, animist::agent::tool::ToolError::Arguments { source } if source.is_data()))));
+}
+
+struct PanicTool(Arc<tokio::sync::Barrier>);
+
+struct PanicOutput(String);
+
+impl IntoToolOutput for PanicOutput {
+    #[expect(clippy::panic_in_result_fn, reason = "tests output panic recovery")]
+    fn into_tool_output(self) -> Result<ToolOutput, ToolError> {
+        assert!(self.0 != "output", "output panic");
+        Ok(ToolOutput::builder().content(self.0).build())
+    }
+}
+
+#[async_trait]
+impl ToolImpl for PanicTool {
+    type Args = String;
+    type Output = PanicOutput;
+    type Error = Infallible;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::builder()
+            .name("panic")
+            .description("Panic at the executor boundary")
+            .input_schema(json!({"type": "string"}))
+            .build()
+    }
+
+    fn scheduling(&self, _input: &serde_json::Value) -> animist::agent::tool::ToolScheduling {
+        animist::agent::tool::ToolScheduling::Resources {
+            reads: vec![],
+            writes: vec![],
+        }
+    }
+
+    async fn call(
+        &self,
+        _context: &ToolContext<'_>,
+        args: String,
+    ) -> Result<PanicOutput, Infallible> {
+        self.0.wait().await;
+        tokio::task::yield_now().await;
+        match args.as_str() {
+            "borrowed" => panic!("borrowed panic"),
+            "owned" => std::panic::panic_any(String::from("owned panic")),
+            "opaque" => std::panic::panic_any(42_u32),
+            _ => Ok(PanicOutput(args)),
+        }
+    }
+}
+
+#[tokio::test]
+async fn executor_panics_are_reported_while_siblings_finish_and_inference_continues() {
+    for timeout in [None, Some(10_000_u64)] {
+        let mut tools = ToolRegistry::default();
+        tools
+            .register(PanicTool(Arc::new(tokio::sync::Barrier::new(5))))
+            .unwrap();
+        let requests = Arc::default();
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        vec![
+                            call("borrowed", "panic", json!("borrowed")),
+                            call("owned", "panic", json!("owned")),
+                            call("opaque", "panic", json!("opaque")),
+                            call("output", "panic", json!("output")),
+                            call("sibling", "panic", json!("survived")),
+                        ],
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Arc::clone(&requests),
+            ))
+            .tools(tools)
+            .config(
+                AgentConfig::builder()
+                    .max_concurrent_tools(5_usize)
+                    .maybe_tool_timeout_ms(timeout)
+                    .build(),
+            )
+            .build();
+        let (tx, rx) = flume::unbounded();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            agent.run(input(), RunOptions::builder().events(tx).build()),
+        )
+        .await
+        .expect("all five calls must be polled in the same wave")
+        .unwrap();
+        assert_eq!(report.status, RunStatus::Completed);
+        assert_eq!(report.tool_failures.len(), 4);
+        let events: Vec<_> = rx.try_iter().collect();
+        let requests = requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        let results = &requests[1].last().unwrap().content;
+        for (id, expected) in [
+            ("borrowed", "borrowed panic"),
+            ("owned", "owned panic"),
+            ("opaque", "non-string panic payload"),
+            ("output", "output panic"),
+        ] {
+            assert!(report.tool_failures.iter().any(|failure| {
+                failure.call.id == id
+                    && matches!(&*failure.error, ToolError::Panicked { message } if message == expected)
+            }), "missing structured failure for {id}");
+            assert!(results.iter().any(|block| matches!(
+                block, ContentBlock::ToolResult { tool_use_id, content, is_error: true, .. }
+                    if tool_use_id == id && content == &format!("Tool execution panicked: {expected}").into()
+            )), "missing model-visible error for {id}");
+            assert!(events.iter().any(|event| matches!(
+                event, AgentEvent::ToolFailed { call, error }
+                    if call.id == id && matches!(&**error, ToolError::Panicked { message } if message == expected)
+            )), "missing failure event for {id}");
+            assert!(
+                events.iter().any(|event| matches!(
+                    event, AgentEvent::ToolFinished { call, output }
+                        if call.id == id && output.is_error
+                )),
+                "missing finished event for {id}"
+            );
+        }
+        assert!(results.iter().any(|block| matches!(
+            block, ContentBlock::ToolResult { tool_use_id, content, is_error: false, .. }
+                if tool_use_id == "sibling" && content == &"survived".into()
+        )));
+        animist::protocol::validate_replay(&agent.history().current().await, &[]).unwrap();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PanicHook {
+    Before,
+    After,
+}
+
+#[async_trait]
+impl LayerImpl for PanicHook {
+    async fn pre_tool_exec(
+        &self,
+        _agent: &Agent,
+        _context: &ToolContext<'_>,
+    ) -> animist::agent::Result<animist::agent::ToolDecision> {
+        if matches!(self, Self::Before) {
+            panic!("pre-tool layer panic");
+        }
+        Ok(animist::agent::ToolDecision::Run)
+    }
+
+    async fn post_tool_exec(
+        &self,
+        _agent: &Agent,
+        _context: &ToolContext<'_>,
+        _output: ToolOutput,
+    ) -> animist::agent::Result<ToolOutput> {
+        panic!("post-tool layer panic")
+    }
+}
+
+#[tokio::test]
+async fn tool_layer_panics_unwind_out_of_the_run() {
+    for (hook, expected) in [
+        (PanicHook::Before, "pre-tool layer panic"),
+        (PanicHook::After, "post-tool layer panic"),
+    ] {
+        let mut tools = ToolRegistry::default();
+        tools.register(Echo(Arc::default())).unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![response(
+                    vec![call("1", "echo", json!({"text": "hello"}))],
+                    StopReason::ToolUse,
+                )],
+                false,
+                Arc::default(),
+            ))
+            .tools(tools)
+            .layers(AgentLayer::builder().layer(Layer::new(hook)).build())
+            .build();
+        let panic = AssertUnwindSafe(agent.run(input(), RunOptions::default()))
+            .catch_unwind()
+            .await
+            .expect_err("layer panic must escape the executor boundary");
+        assert_eq!(panic.downcast_ref::<&str>(), Some(&expected));
+    }
 }
 
 struct Transform(&'static str);

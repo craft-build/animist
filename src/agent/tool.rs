@@ -1,8 +1,9 @@
-use std::{collections::BTreeMap, error::Error};
+use std::{collections::BTreeMap, error::Error, panic::AssertUnwindSafe};
 
 use arc_handle::arc_handle;
 use async_trait::async_trait;
 use bon::Builder;
+use futures_util::FutureExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use snafu::{IntoError, ResultExt, Snafu};
@@ -71,6 +72,8 @@ pub enum ToolError {
     Output {
         source: Box<dyn Error + Send + Sync>,
     },
+    #[snafu(display("Tool execution panicked: {message}"))]
+    Panicked { message: String },
 }
 
 /// One admitted model tool call with its decoded JSON arguments.
@@ -152,6 +155,28 @@ pub trait ToolExecutor {
         context: &ToolContext<'_>,
         input: Value,
     ) -> std::result::Result<ToolOutput, ToolError>;
+}
+
+impl ToolExecutor {
+    pub(crate) async fn execute_catching_panics(
+        &self,
+        context: &ToolContext<'_>,
+        input: Value,
+    ) -> std::result::Result<ToolOutput, ToolError> {
+        AssertUnwindSafe(async { self.execute(context, input).await })
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|payload| {
+                let message = if let Some(message) = payload.downcast_ref::<String>() {
+                    message.clone()
+                } else if let Some(message) = payload.downcast_ref::<&str>() {
+                    (*message).to_owned()
+                } else {
+                    "non-string panic payload".to_owned()
+                };
+                Err(ToolError::Panicked { message })
+            })
+    }
 }
 
 pub(super) struct TypedTool<T>(pub(super) T);

@@ -48,7 +48,7 @@ workaround.
 | F04 | [Revision squash](F04-revision-squash.md) | High | Persistence-time placeholder pruning (11) | Implemented; reviewed, unreleased |
 | F05 | [History change feed](F05-history-change-feed.md) | Medium | Snapshot-shape diffing for incremental saves (11) | Implemented; reviewed, unreleased |
 | F06 | [Tool decision with a response](F06-tool-decision-respond.md) | Medium | Dedup served inside `HarnessExecutor` (05) | Implemented; reviewed, unreleased |
-| F07 | [Panic-safe tool execution](F07-panic-safe-tools.md) | Medium | `catch_unwind` in `HarnessExecutor` (05) | Open |
+| F07 | [Panic-safe tool execution](F07-panic-safe-tools.md) | Medium | `catch_unwind` in `HarnessExecutor` (05) | Implemented; reviewed, unreleased |
 | F08 | [Usage cost](F08-usage-cost.md) | Medium | Craft-side pricing (03) | Open |
 | F09 | [Bedrock client, listing, Converse](F09-bedrock-client-and-converse.md) | Medium | No timeout client, `max_attempts = 1`, craft listing, Converse-only models unsupported (02) | Open |
 | F10 | [Tool name on results](F10-tool-result-name.md) | Low | `history::ext::tool_name_for` (04) | Open |

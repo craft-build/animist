@@ -826,7 +826,7 @@ impl Agent {
                             match self.config.tool_timeout_ms {
                                 Some(ms) => match tokio::time::timeout(
                                     std::time::Duration::from_millis(ms),
-                                    tool.execute(&context, call.input.clone()),
+                                    tool.execute_catching_panics(&context, call.input.clone()),
                                 )
                                 .await
                                 {
@@ -836,7 +836,7 @@ impl Agent {
                                     }
                                     .build()),
                                 },
-                                None => Ok(tool.execute(&context, call.input.clone()).await),
+                                None => Ok(tool.execute_catching_panics(&context, call.input.clone()).await),
                             }
                         } => result?,
                     };

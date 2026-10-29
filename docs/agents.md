@@ -155,6 +155,19 @@ only the model-facing result renders them as text. Layer
 errors and explicit stop decisions terminate the run. Tool implementations are
 never retried automatically. Execution is sequential by default.
 
+Executor panics that unwind become `ToolError::Panicked { message }`: an `is_error`
+result, a `ToolFailed` event, and a retained `ToolFailure`. Siblings finish and the
+run continues to the next step. This boundary covers typed argument decoding,
+execution, and output conversion, including erased executors, without spawning.
+String and `&str` payloads retain their text; other payloads render as
+`non-string panic payload`. The panic hook still runs; aborting panics cannot be caught.
+Recovery does not roll back tool side effects or repair tool-owned state.
+
+Layer hooks run outside their call's executor boundary, so their panics unwind
+rather than becoming tool failures. If a child hook panics during a parent's
+`dispatch` or `dispatch_all`, that unwind crosses the parent executor boundary
+and becomes a `Panicked` failure of the parent.
+
 ### Direct tool tests
 
 Enable the `testing` feature to use `agent::testing::ToolHarness` without a
@@ -172,10 +185,10 @@ let output = harness.call(my_typed_tool, serde_json::json!({"path": "a.rs"})).aw
 
 `call` uses the same typed decoding and output conversion as registered tools;
 `call_executor` accepts an erased `ToolExecutor`. Both return structured
-`ToolError`s directly, including `Arguments` failures, rather than rendering them
-as model-visible output. Roots run serially through mutable harness access, with
-generated `harness-N` call identities. `run_id` and `cancellation` can be supplied
-to the builder; `run()` exposes the shared run context and statistics.
+`ToolError`s directly, including `Arguments` and `Panicked` failures, rather than
+rendering them as model-visible output. Roots run serially through mutable harness
+access, with generated `harness-N` call identities. `run_id` and `cancellation` can
+be supplied to the builder; `run()` exposes the shared run context and statistics.
 
 Root invocation is deliberately direct: it bypasses authorization layers, timeout
 enforcement, and run counters. Cancellation is cooperative, so a root can await

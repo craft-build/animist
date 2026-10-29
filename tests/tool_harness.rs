@@ -74,6 +74,38 @@ async fn typed_arguments_outputs_and_progress_need_no_provider() {
 
 struct WaitForCancellation;
 
+struct PanickingExecutor;
+
+#[async_trait]
+impl ToolExecutorImpl for PanickingExecutor {
+    fn definition(&self) -> ToolDefinition {
+        definition("echo")
+    }
+
+    async fn execute(
+        &self,
+        _context: &ToolContext<'_>,
+        _input: Value,
+    ) -> Result<ToolOutput, ToolError> {
+        tokio::task::yield_now().await;
+        panic!("erased executor panic")
+    }
+}
+
+#[tokio::test]
+async fn erased_executor_panics_return_structured_errors_and_the_harness_remains_usable() {
+    let mut harness = ToolHarness::builder().build().unwrap();
+    assert!(matches!(
+        harness.call_executor(ToolExecutor::new(PanickingExecutor), Value::Null).await,
+        Err(ToolError::Panicked { message }) if message == "erased executor panic"
+    ));
+    let output = harness
+        .call(Echo, json!({"text": "still usable"}))
+        .await
+        .unwrap();
+    assert_eq!(output.content, "0:still usable".into());
+}
+
 #[async_trait]
 impl ToolExecutorImpl for WaitForCancellation {
     fn definition(&self) -> ToolDefinition {
@@ -110,6 +142,69 @@ async fn erased_executors_observe_cancellation_from_a_cloned_handle() {
 struct Parent {
     parallel: bool,
     scheduling: ToolScheduling,
+}
+
+struct PanicChildHook;
+
+#[async_trait]
+impl LayerImpl for PanicChildHook {
+    async fn pre_tool_exec(
+        &self,
+        _agent: &Agent,
+        _context: &ToolContext<'_>,
+    ) -> Result<ToolDecision, AgentError> {
+        panic!("child layer panic")
+    }
+}
+
+#[tokio::test]
+async fn child_panics_are_recorded_at_the_executor_boundary_they_cross() {
+    for parallel in [false, true] {
+        for layer_panic in [false, true] {
+            let mut tools = ToolRegistry::default();
+            tools
+                .register_executor(ToolExecutor::new(PanickingExecutor))
+                .unwrap();
+            let layers = layer_panic.then(|| {
+                AgentLayer::builder()
+                    .layer(Layer::new(PanicChildHook))
+                    .build()
+            });
+            let mut harness = ToolHarness::builder()
+                .tools(tools)
+                .maybe_layers(layers)
+                .build()
+                .unwrap();
+            let result = harness
+                .call(
+                    Parent {
+                        parallel,
+                        scheduling: ToolScheduling::Exclusive,
+                    },
+                    json!(["child"]),
+                )
+                .await;
+            let failures = harness.run().tool_failures().await;
+            if layer_panic {
+                assert!(matches!(
+                    result, Err(ToolError::Panicked { message }) if message == "child layer panic"
+                ));
+                assert!(failures.is_empty(), "the child executor was never entered");
+            } else {
+                let output = result.unwrap();
+                assert!(output.is_error);
+                assert_eq!(
+                    output.content,
+                    "Tool execution panicked: erased executor panic".into()
+                );
+                assert_eq!(failures.len(), 1);
+                assert_eq!(failures[0].call.id, "child");
+                assert!(matches!(
+                    &*failures[0].error, ToolError::Panicked { message } if message == "erased executor panic"
+                ));
+            }
+        }
+    }
 }
 
 #[async_trait]
