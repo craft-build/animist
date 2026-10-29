@@ -1316,7 +1316,7 @@ async fn nested_dispatch_shares_the_run_budget_without_permit_deadlock() {
 #[tokio::test]
 async fn ten_call_steps_retain_only_the_placeholder_and_ordered_final_results() {
     use animist::agent::tool::ToolScheduling;
-    use animist::history::{History, HistoryEntry};
+    use animist::history::{History, HistoryChange, HistoryEntry};
 
     for limit in [1_usize, 10] {
         let original = input();
@@ -1360,8 +1360,49 @@ async fn ten_call_steps_retain_only_the_placeholder_and_ordered_final_results() 
             .tools(tools)
             .config(AgentConfig::builder().max_concurrent_tools(limit).build())
             .build();
+        let before = agent.history().snapshot().await;
         agent.run(input(), RunOptions::default()).await.unwrap();
         let snapshot = agent.history().snapshot().await;
+        let changes = agent
+            .history()
+            .changes_since(&before.generation())
+            .await
+            .unwrap();
+        assert_eq!(changes.generation(), snapshot.generation());
+        let mut replayed = before.entries().to_vec();
+        let mut progress_revisions = 0;
+        let mut replacements = 0;
+        for change in changes.changes() {
+            match change {
+                HistoryChange::Appended { index, entry } => {
+                    assert_eq!(*index, replayed.len());
+                    replayed.push(entry.clone());
+                }
+                HistoryChange::Revised { index, message } => {
+                    assert_eq!(*index, 3);
+                    let entry = &replayed[*index];
+                    let mut revisions = entry.revisions().to_vec();
+                    revisions.push(message.clone());
+                    replayed[*index] = HistoryEntry::builder()
+                        .source(entry.verbatim().clone())
+                        .revisions(revisions)
+                        .active(entry.is_active())
+                        .build();
+                    progress_revisions += 1;
+                }
+                HistoryChange::EntryReplaced { index, entry } => {
+                    assert_eq!(*index, 3);
+                    assert_eq!(progress_revisions, 10);
+                    assert_eq!(replayed[*index].revisions().len(), 10);
+                    assert_eq!(entry.revisions().len(), 1);
+                    replayed[*index] = entry.clone();
+                    replacements += 1;
+                }
+                other => panic!("unexpected agent history change: {other:?}"),
+            }
+        }
+        assert_eq!(replacements, 1, "concurrency limit {limit}");
+        assert_eq!(replayed, snapshot.entries(), "concurrency limit {limit}");
         assert_eq!(snapshot.entries()[0], application_entry);
         let result = &snapshot.entries()[3];
         assert_eq!(result.revisions().len(), 1, "concurrency limit {limit}");

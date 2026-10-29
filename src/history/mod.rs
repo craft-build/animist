@@ -376,8 +376,9 @@ impl History {
         snapshot.entries[index].squash_revisions();
         let mut state = self.history.write().await;
         ensure!(state.generation == snapshot.generation, ConflictSnafu);
+        let entry = snapshot.entries[index].clone();
         state.entries = snapshot.entries;
-        state.generation += 1;
+        state.record(vec![HistoryChange::EntryReplaced { index, entry }]);
         Ok(())
     }
 

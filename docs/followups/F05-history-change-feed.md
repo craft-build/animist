@@ -67,5 +67,6 @@ new variants; release under `feat!:`. Unreleased; Craft cleanup remains pending.
 Validation passed: `cargo fmt --check`, strict all-target/all-feature Clippy,
 `cargo test`, `cargo test --features bedrock`, `cargo doc --no-deps`, and
 `git diff --check`. Review verdict: clean against baseline `e639eb75`.
-When integrating F04, connect revision squashing to this feed with an exact
-replacement event or explicit cursor invalidation.
+Landing integrates F04 revision squashing with an `EntryReplaced` event, preserving
+exact incremental replay of originals and final revisions. The ten-call agent
+integration test replays the feed for serial and concurrent tool completion.

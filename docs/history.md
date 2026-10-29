@@ -296,6 +296,11 @@ then insertions in ascending snapshot position, preserving plan order for ties.
 Insertion indices include the shifts from preceding insertion events.
 Insertions at the end emit `Appended`, including those committed by the agent.
 
+`EntryReplaced` replaces the entire entry at its index without shifting entries.
+Agent tool-result squashing emits this event after progress revisions, preserving
+the original placeholder and only the final revision. Replace the persisted entry
+rather than appending a revision, so incremental replay matches a full snapshot.
+
 The feed retains at most 1024 events, evicting whole commits. A single commit
 larger than that is not retained and clears older events. Retention bounds event
 count, not bytes: stored message payload sizes remain caller-controlled.

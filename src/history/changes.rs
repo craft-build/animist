@@ -31,6 +31,8 @@ pub enum HistoryChange {
     },
     /// Marks an entry inactive without removing it or shifting indices.
     Deactivated { index: usize },
+    /// Replaces a whole entry, including revisions, without shifting indices.
+    EntryReplaced { index: usize, entry: HistoryEntry },
 }
 
 /// An atomic delta read and the cursor for the next read.
