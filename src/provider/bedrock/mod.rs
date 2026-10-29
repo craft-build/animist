@@ -27,6 +27,7 @@ use super::{
 use crate::protocol::{
     Protocol as ProtocolAdapter, ProtocolInput,
     anthropic::{AnthropicEffort, AnthropicOptions, AnthropicThinking, Messages},
+    bedrock::converse::{Converse, ConverseOptions},
     openai::{ChatCompletions, OpenAiOptions, Responses},
 };
 
@@ -54,6 +55,8 @@ pub enum Protocol {
     ChatCompletions,
     /// Bedrock's `OpenAI` Responses compatibility surface.
     Responses,
+    /// Bedrock's portable Converse surface with AWS `EventStream` framing.
+    Converse,
 }
 
 /// Source used to discover Bedrock model IDs.
@@ -98,6 +101,8 @@ pub struct BedrockConfig {
     /// `anthropic-beta` features appended to Messages requests.
     #[builder(default)]
     pub anthropic_beta: Vec<String>,
+    /// Explicit model-specific Converse settings; no dialect is inferred.
+    pub converse_additional_model_request_fields: Option<Value>,
     /// Metadata merged by exact ID over control-plane listings.
     pub catalog: Option<crate::catalog::ProviderCatalog>,
 }
@@ -219,7 +224,14 @@ impl Bedrock {
             .method("POST")
             .uri(url.as_str())
             .header("content-type", "application/json")
-            .header("accept", "text/event-stream");
+            .header(
+                "accept",
+                if self.config.protocol == Protocol::Converse {
+                    "application/vnd.amazon.eventstream"
+                } else {
+                    "text/event-stream"
+                },
+            );
         if self.config.protocol == Protocol::AnthropicMessages {
             builder = builder.header("anthropic-version", &self.config.anthropic_version);
             if !self.config.anthropic_beta.is_empty() {
@@ -387,6 +399,26 @@ impl ProviderImpl for Bedrock {
             .options(&options)
             .build();
         match self.config.protocol {
+            Protocol::Converse => {
+                ensure!(
+                    !matches!(model.id.as_str(), "" | "." | ".."),
+                    error::InvalidConverseModelIdSnafu { id: &model.id }
+                );
+                let protocol_options = ConverseOptions::builder()
+                    .maybe_additional_model_request_fields(
+                        self.config.converse_additional_model_request_fields.clone(),
+                    )
+                    .build();
+                let body = Converse.request(input, &protocol_options)?;
+                let mut url = self.endpoint.clone();
+                url.path_segments_mut()
+                    .expect("validated endpoint is an HTTP origin")
+                    .push("model")
+                    .push(&model.id)
+                    .push("converse-stream");
+                let response = self.send(url.path(), body).await?;
+                Ok(Converse.assemble(response, event_tx).await?)
+            }
             Protocol::AnthropicMessages => {
                 let mut effort = None;
                 let thinking = match &options.thinking {
@@ -486,8 +518,8 @@ impl ProviderImpl for Bedrock {
                         let response = self.send("/openai/v1/responses", body).await?;
                         Ok(Responses.assemble(response, event_tx).await?)
                     }
-                    Protocol::AnthropicMessages => {
-                        unreachable!("matched by the outer `Protocol::AnthropicMessages` arm")
+                    Protocol::AnthropicMessages | Protocol::Converse => {
+                        unreachable!("native protocol matched by the outer arm")
                     }
                 }
             }

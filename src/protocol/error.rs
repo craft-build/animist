@@ -7,6 +7,11 @@ use super::openai::OpenAIProtocolError;
 /// Failures surfaced by every protocol adapter through `protocol::Result`.
 #[derive(Debug, Snafu)]
 pub enum ProtocolError {
+    #[cfg(feature = "bedrock")]
+    #[snafu(transparent)]
+    Bedrock {
+        source: super::bedrock::BedrockProtocolError,
+    },
     #[snafu(transparent)]
     Sampling { source: super::SamplingError },
     #[snafu(transparent)]

@@ -8,6 +8,8 @@ use crate::history::Message;
 use crate::provider::{Model, ProviderEvent, RequestOptions, StreamResponse, Tool};
 
 pub mod anthropic;
+#[cfg(feature = "bedrock")]
+pub mod bedrock;
 mod decider;
 mod embedding;
 mod error;

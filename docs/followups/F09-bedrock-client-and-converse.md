@@ -58,4 +58,35 @@ offer `converse` per model if Part C landed.
 
 ## Completion note
 
-_(fill in when done)_
+Implemented Parts A–C on `feat/f09-bedrock`, unreleased:
+
+- A: injected HTTP client, per-attempt timeout/retry documentation, and a stalled
+  loopback timeout test. Craft owns disabling redirects on its injected client.
+- B: opt-in signed control-plane foundation/profile discovery, profile
+  pagination, exact-ID catalog merging, independent endpoint overrides, and
+  bounded discovery with cycle detection.
+- C: explicit Converse routing and standalone adapter, typed request translation,
+  inline images and image tool results, signed/redacted reasoning replay,
+  bounded CRC-checked EventStream assembly, cache usage, stop reasons, and ordered
+  partial-response checkpoints. Full scope confirmed by the maintainer.
+
+Converse model-specific thinking controls use explicit additional request fields;
+generic thinking controls are rejected rather than guessed from model IDs.
+See [the Bedrock contract](../bedrock.md).
+
+Independent review of the full A–C diff returned clean with no medium-or-higher
+findings. Validation passed:
+
+- `cargo fmt --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test`
+- `cargo test --features bedrock`
+- `cargo test --all-features --all-targets`
+- `cargo test --no-default-features --all-targets`
+- `cargo doc --no-deps` and `cargo doc --all-features --no-deps`
+- `git diff --check`
+
+Bedrock coverage includes 20 provider tests and 10 Converse tests, using fake
+credentials and loopback mocks. No live AWS inference or permissions check was
+performed. The pre-existing live models.dev catalog test remains ignored.
+Craft cleanup remains a post-release task.

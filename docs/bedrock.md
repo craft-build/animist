@@ -9,8 +9,9 @@ animist = { version = "0.1", features = ["bedrock"] }
 ```
 
 This provider uses AWS's credential provider chain and SigV4 signer, `reqwest`
-for HTTP, and Animist's existing protocol adapters and SSE reader. It does not
-implement Converse or wrap `InvokeModel`/AWS EventStream.
+for HTTP, and Animist's protocol adapters. Native Anthropic/OpenAI surfaces use
+SSE; Converse uses a bounded, CRC-checked AWS EventStream decoder. It does not
+wrap `InvokeModel`.
 
 ## Construction
 
@@ -62,14 +63,16 @@ The default origin is
 | `anthropic_messages` (default) | `/anthropic/v1/messages` | Anthropic Messages |
 | `chat_completions` | `/openai/v1/chat/completions` | OpenAI Chat Completions |
 | `responses` | `/openai/v1/responses` | OpenAI Responses |
+| `converse` | `/model/{id}/converse-stream` | Bedrock Converse |
 
 Selection is explicit, never inferred from model names. Confirm that your model
 supports the chosen API in the chosen region. Requests to unsupported APIs are
 not retried through a different protocol or endpoint.
 
 Set `Model::provider` to a shared `Provider` handle wrapping `Bedrock`.
-Supply the exact model ID or inference profile ID required by that API; IDs are
-sent unchanged in the request body.
+Supply the exact model ID or inference profile ID required by that API. Native
+APIs send it unchanged in the body; Converse encodes it as a single URL path
+segment, including any slash in a model/profile ARN.
 For example, some models require a geographic or global inference profile rather
 than a foundation model ID. IAM permissions, model access, quotas, and regional
 availability remain controlled by AWS.
@@ -134,6 +137,69 @@ Messages sends `anthropic-version: 2023-06-01` by default. Configure
 document support for those settings. These headers are included in signing.
 Responses uses the shared adapter's `store: false` behavior.
 
+## Converse
+
+Select `Protocol::Converse` explicitly. The `bedrock` feature also exposes the
+standalone `protocol::bedrock::converse::{Converse, ConverseOptions}` adapter.
+It implements the existing `protocol::Protocol` contract; AWS authentication,
+endpoint selection, and retries remain in the provider.
+
+Converse supports text, inline PNG/JPEG/GIF/WebP image inputs, tool calls with
+object input, and text/image tool results with native success/error status.
+Remote image URLs are rejected rather than fetched. Tool declarations use
+`toolSpec`/`inputSchema.json`. Unsupported content, tool thought signatures,
+and nonempty `loaded_tools` metadata are rejected, never silently discarded.
+Shared structural replay validation runs before translation or signing.
+
+Signed thinking maps to `reasoningContent.reasoningText`, retaining text and
+signature unchanged; unsigned thinking is rejected. Redacted reasoning maps
+to the opaque base64 `redactedContent` field. These are replay candidates for
+Converse, not a guarantee of cross-protocol or cross-model portability.
+Keep the original history unmodified when replaying signed reasoning.
+
+Converse has no portable thinking switch. Generic `RequestOptions::thinking`
+values other than `Off` are rejected instead of guessing a model's dialect.
+Here, `Off` means no portable thinking control is sent; it does not suppress
+model-specific fields or alter reasoning history. Supply the selected model's
+documented additional settings explicitly through
+`BedrockConfig::converse_additional_model_request_fields` (a JSON object), or
+`ConverseOptions::additional_model_request_fields` when using the adapter
+directly. These settings apply to every Converse request on that provider.
+Catalog-required thinking still requires a deliberate runtime policy override
+when controls are supplied this way. No settings are inferred from model names.
+
+Portable controls are `maxTokens`, temperature `[0, 1]`, top-p `[0, 1]`, and up
+to four nonempty stop sequences. Omitted controls stay omitted; explicit zero
+sampling values and empty stop lists survive. Frequency/presence penalties and
+fast mode are unsupported. Extra model restrictions remain server-validated.
+At-depth system messages are rejected by default; `MoveToPreamble` preserves
+instruction authority by appending ordered text blocks to Converse's `system`.
+
+The decoder validates both prelude and message CRC32 checksums, header framing
+and uniqueness, lengths, and truncated frames. The total exchange, and therefore
+each frame and assembled output, is bounded to 16 MiB of wire data. Unread HTTP
+bytes, framing state, and assembled content are separate request-owned state.
+No background assembly task is spawned; dropping the exchange cancels transport.
+
+Text and reasoning deltas are display-only. `contentBlockStop` validates tool
+JSON and reasoning signatures and checkpoints only the contiguous closed
+content prefix; a closed later block cannot cross an earlier open block.
+Usage metadata arrives after `messageStop` and checkpoints cumulative input,
+output, cache-read, and cache-write tokens. Both stop and metadata, followed by
+clean end-of-stream, are required for a successful complete response.
+`InferenceExchange` retains observed checkpoints when cancelled or failed.
+
+`end_turn`/`stop_sequence`, `tool_use`, `max_tokens`, and
+`model_context_window_exceeded` map to the corresponding shared stop reasons;
+`guardrail_intervened`/`content_filtered` map to `Refusal`. Unknown stop reasons
+and unsupported stream events fail explicitly. EventStream exceptions preserve
+their type, headers, and raw payload through
+`BedrockProtocolError::Api` → `ProtocolError::Bedrock` → `ProviderError::Protocol`.
+Stream errors are never retried.
+
+`Protocol::Converse`, `ProtocolError::Bedrock`, and the new configuration/error
+fields are breaking additions for exhaustive matches and direct struct literals.
+
 ## Failures, retries, and cancellation
 
 Only HTTP 429 and 503 responses are retried, before stream assembly begins.
@@ -192,5 +258,7 @@ separate explicitly configured smoke test.
 - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html
 - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html
 - https://docs.aws.amazon.com/bedrock/latest/userguide/inference-responses-api.html
+- https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html
+- https://smithy.io/2.0/aws/amazon-eventstream.html
 - https://docs.rs/aws-config/
 - https://docs.rs/aws-sigv4/

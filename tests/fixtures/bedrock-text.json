@@ -1,0 +1,8 @@
+[
+  {"event":"messageStart","payload":{"role":"assistant"}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"Hello "}}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"text":"🦀"}}},
+  {"event":"contentBlockStop","payload":{"contentBlockIndex":0}},
+  {"event":"messageStop","payload":{"stopReason":"end_turn"}},
+  {"event":"metadata","payload":{"usage":{"inputTokens":12,"outputTokens":3,"totalTokens":15,"cacheReadInputTokens":5,"cacheWriteInputTokens":7},"metrics":{"latencyMs":42}}}
+]

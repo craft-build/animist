@@ -17,6 +17,7 @@ bedrock = [
     "dep:aws-sigv4",
     "dep:aws-types",
     "dep:bytes",
+    "dep:crc32fast",
     "dep:http",
     "dep:url",
 ]
@@ -31,6 +32,7 @@ aws-types = { version = "1", optional = true }
 base64 = "0.23"
 bon = "3"
 bytes = { version = "1", optional = true }
+crc32fast = { version = "1", optional = true }
 flume = "0.12"
 futures-util = "0.3"
 http = { version = "1", optional = true }

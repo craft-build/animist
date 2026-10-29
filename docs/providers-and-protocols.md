@@ -7,7 +7,9 @@ supports Chat Completions and Responses; Anthropic's provider supports Messages.
 Synthetic, Z.AI Coding Plan, Ollama, llama.cpp, and oMLX reuse the OpenAI Chat
 Completions adapter.
 The optional Amazon Bedrock provider composes the native Anthropic/OpenAI
-adapters with AWS credential resolution and SigV4 signing.
+adapters and Bedrock Converse with AWS credential resolution and SigV4 signing.
+It optionally discovers foundation models and paginated inference profiles
+through signed control-plane GET requests.
 See [OpenAI usage](openai.md), [Anthropic usage](anthropic.md),
 [Synthetic usage](synthetic.md), and [Z.AI Coding Plan usage](zai-coding-plan.md).
 See [Amazon Bedrock usage](bedrock.md) for AWS routing and authentication.
@@ -87,6 +89,11 @@ The contract does not require JSON, HTTP, or SSE for future implementations.
 OpenAI's stateless `ChatCompletions` and `Responses` implementations live under
 `protocol::openai`; Anthropic's `Messages` lives under `protocol::anthropic`,
 each alongside its private Serde wire types.
+With the `bedrock` feature, `protocol::bedrock::converse::Converse` implements the
+same contract using private Converse wire types and a bounded AWS EventStream
+decoder with prelude/message CRC32 checks. It preserves signed and redacted
+reasoning, tool calls, and inline image inputs/results. Model-specific controls
+are explicit additional request fields, not inferred protocol dialects.
 The shared HTTP SSE reader lives in `protocol::sse` and reports `SseError`.
 Their mutable stream state belongs to each assembly future; no shared handle or
 lock is needed. Providers own routing and transport and invoke the selected
@@ -170,6 +177,7 @@ Builder and `Default` both leave sampling omitted, thinking off, and fast false.
 | Chat Completions | Temperature `[0, 2]`, top-p `[0, 1]`, both penalties `[-2, 2]`, up to four stops. |
 | Responses | Temperature `[0, 2]` and top-p `[0, 1]`. Explicit penalties and stops, including an empty list, are unsupported. |
 | Anthropic Messages | Temperature `[0, 1]` or top-p `[0, 1]`, and stops. Penalties are unsupported. The adapter rejects setting both temperature and top-p, or setting either with enabled/adaptive thinking. |
+| Bedrock Converse | Temperature `[0, 1]`, top-p `[0, 1]`, and up to four stops. Penalties and portable thinking/fast controls are unsupported; model-specific settings are explicit additional request fields. |
 | Z.AI Coding Plan | Temperature `[0, 1]`, top-p `[0.01, 1]`, and at most one stop. Penalties are unsupported. |
 
 All numbers must be finite; stop strings must be nonempty. Synthetic, Ollama,
@@ -204,7 +212,7 @@ continues to work; no provider automatically demotes history instructions.
 | OpenAI Responses | Emits ordered `system` input messages; the separate preamble remains in `instructions`. |
 | Synthetic, Z.AI Coding Plan, Ollama, llama.cpp, oMLX | Use the Chat Completions translation, preserving roles and order on the wire. Actual model/chat-template support is server-dependent. |
 | Anthropic Messages | Cannot represent at-depth system messages. Rejects any history system message by default, including leading ones, rather than silently relocating it. |
-| Amazon Bedrock | Follows the selected native adapter, including Anthropic rejection/fallback policy. |
+| Amazon Bedrock | Native APIs follow their selected adapter. Converse rejects system history unless `MoveToPreamble` explicitly appends its ordered text blocks to `system`. |
 
 For Anthropic, opt in per request to losing placement while retaining instruction
 authority:
@@ -287,6 +295,8 @@ Chat Completions supports text-only tool results and returns
 `UnsupportedChatToolImage` with the call ID for images; it never promotes them
 to unrelated user messages. Single text results retain the OpenAI string wire
 shape; empty or multiple text parts use arrays.
+Bedrock Converse supports text and inline image result parts in order, with
+native success/error status. Remote image URLs are rejected rather than fetched.
 
 The common `is_error` flag is retained in execution/history and sent natively
 by Anthropic. OpenAI's function-output wire formats have no equivalent flag;
@@ -347,6 +357,11 @@ has only display deltas and unknown usage.
   block checkpointing across that gap. Terminal usage is reported before final output translation;
   valid failure usage is retained without replacing the upstream failure when
   its usage payload is malformed.
+- Converse closes blocks at `contentBlockStop` after tool JSON/signature
+  validation and emits only the contiguous closed prefix. Signatures alone do
+  not close thinking. Redacted bytes are assembled before base64 replay.
+  Post-stop metadata reports cumulative usage including cache reads/writes;
+  success also requires clean EventStream EOF.
 
 These are replay **candidates**, not a complete inference request or permission
 to execute tools. They remain tied to the producing protocol/dialect. A caller
@@ -363,6 +378,8 @@ not an unbounded event log. A checkpoint is observable only after the producer
 enqueues it; cancellation cannot recover unreported wire state or server usage.
 Errors retain their concrete protocol/provider variants and upstream payloads
 in `ExchangeEvent::Finished`, independently of the partial output.
+Converse applies the same 16 MiB total-wire budget to AWS EventStream framing
+and validates both CRC32 checksums, length fields, and header structure.
 
 This adds provider event variants and changes `ProviderEvent` equality from
 `Eq` to `PartialEq` because usage includes an optional floating-point cost.

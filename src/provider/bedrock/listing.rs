@@ -13,6 +13,7 @@ const LISTING_LIMIT: usize = 16 * 1024 * 1024;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FoundationModels {
+    #[serde(default)]
     model_summaries: Vec<FoundationModel>,
 }
 
@@ -25,6 +26,7 @@ struct FoundationModel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InferenceProfiles {
+    #[serde(default)]
     inference_profile_summaries: Vec<InferenceProfile>,
     next_token: Option<String>,
 }

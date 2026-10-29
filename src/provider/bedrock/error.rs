@@ -24,6 +24,11 @@ pub enum BedrockError {
         "Bedrock endpoint must be an HTTPS origin (HTTP only on loopback), without credentials, query, or fragment"
     ))]
     InvalidEndpoint { backtrace: snafu::Backtrace },
+    #[snafu(display("Invalid Converse model ID {id:?}"))]
+    InvalidConverseModelId {
+        id: String,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("Failed to create Bedrock HTTP client: {source}"))]
     Client { source: reqwest::Error },
     #[snafu(display("Failed to serialize Bedrock request: {source}"))]

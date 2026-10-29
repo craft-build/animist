@@ -1,6 +1,9 @@
 #![cfg(feature = "bedrock")]
 #![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
 
+#[path = "support/bedrock_eventstream.rs"]
+mod wire;
+
 use std::fmt::Write as _;
 
 use std::{
@@ -710,6 +713,7 @@ async fn thinking_options_are_resolved_for_the_selected_protocol() {
             }
             Protocol::ChatCompletions => assert_eq!(body["reasoning_effort"], "high"),
             Protocol::Responses => assert_eq!(body["reasoning"]["effort"], "high"),
+            Protocol::Converse => unreachable!("this test exercises native thinking dialects"),
         }
         assert_eq!(model.info, info);
     }
@@ -841,6 +845,71 @@ async fn retries_are_bounded_and_resolve_and_sign_with_current_credentials() {
     provider.refresh_auth().await.unwrap();
     provider.reload_auth().await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 5);
+}
+
+#[tokio::test]
+async fn converse_routes_encoded_model_ids_and_signs_the_exact_request_without_native_headers() {
+    for (id, fixture, path) in [
+        (
+            "example.model:0",
+            wire::TEXT,
+            "/model/example.model:0/converse-stream",
+        ),
+        (
+            "arn:aws:bedrock:us-east-1:123456789012:inference-profile/example",
+            wire::TOOLS,
+            "/model/arn:aws:bedrock:us-east-1:123456789012:inference-profile%2Fexample/converse-stream",
+        ),
+        (
+            "global.example",
+            wire::REASONING,
+            "/model/global.example/converse-stream",
+        ),
+    ] {
+        let (url, task) = server(vec![
+            Reply::builder()
+                .status(200_u16)
+                .body(wire::fixture(fixture))
+                .build(),
+        ])
+        .await;
+        let fields = json!({"thinking":{"type":"adaptive"}});
+        let provider = Bedrock::from_sdk_config(
+            BedrockConfig::builder()
+                .protocol(Protocol::Converse)
+                .endpoint_url(url)
+                .converse_additional_model_request_fields(fields.clone())
+                .build(),
+            &static_sdk(),
+        )
+        .unwrap();
+        let mut model = model();
+        model.id = id.into();
+        let (tx, rx) = flume::unbounded();
+        let result = provider
+            .stream_message(&model, &messages(), "", &[], &tx, RequestOptions::default())
+            .await
+            .unwrap();
+        assert_ne!(result.message.content.len(), 0);
+        assert!(
+            rx.drain()
+                .any(|event| matches!(event, ProviderEvent::ContentComplete { .. }))
+        );
+        let requests = task.await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.path, path);
+        assert_eq!(
+            request.headers["accept"],
+            "application/vnd.amazon.eventstream"
+        );
+        assert!(!request.headers.contains_key("anthropic-version"));
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body.get("model"), None);
+        assert_eq!(body["additionalModelRequestFields"], fields);
+        assert_eq!(body["inferenceConfig"]["maxTokens"], 8192);
+        verify_wire_signature(request, "us-east-1");
+    }
 }
 
 #[tokio::test]
@@ -1102,7 +1171,10 @@ async fn control_plane_listing_rejects_cycles_and_preserves_errors() {
             "token",
         ),
         (vec![(403, json!({"message":"denied"}))], "http"),
-        (vec![(200, json!({"unexpected":[]}))], "decode"),
+        (
+            vec![(200, json!({"modelSummaries":"not an array"}))],
+            "decode",
+        ),
     ] {
         let (url, task) = server(
             replies

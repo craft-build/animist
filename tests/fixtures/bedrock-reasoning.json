@@ -1,0 +1,14 @@
+[
+  {"event":"messageStart","payload":{"role":"assistant"}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"A plan"}}}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"reasoningContent":{"signature":"signed-"}}}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"reasoningContent":{"signature":"opaque"}}}},
+  {"event":"contentBlockStop","payload":{"contentBlockIndex":0}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"reasoningContent":{"redactedContent":"AAE="}}}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":1,"delta":{"reasoningContent":{"redactedContent":"AgM="}}}},
+  {"event":"contentBlockStop","payload":{"contentBlockIndex":1}},
+  {"event":"contentBlockDelta","payload":{"contentBlockIndex":2,"delta":{"text":"Done"}}},
+  {"event":"contentBlockStop","payload":{"contentBlockIndex":2}},
+  {"event":"messageStop","payload":{"stopReason":"end_turn"}},
+  {"event":"metadata","payload":{"usage":{"inputTokens":8,"outputTokens":6,"totalTokens":14}}}
+]
