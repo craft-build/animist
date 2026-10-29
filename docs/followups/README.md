@@ -45,7 +45,7 @@ workaround.
 | F01 | [Step-boundary messages](F01-step-boundary-messages.md) | High | Doom grace / nudge / continuation re-runs (07, 08) | Open |
 | F02 | [Parallel child dispatch](F02-parallel-child-dispatch.md) | High | Serial `batch` children (10) | Open |
 | F03 | [Tool test context](F03-tool-test-context.md) | Medium | One-shot-agent `tool_harness` (06) | Implemented; reviewed, unreleased |
-| F04 | [Revision squash](F04-revision-squash.md) | High | Persistence-time placeholder pruning (11) | Open |
+| F04 | [Revision squash](F04-revision-squash.md) | High | Persistence-time placeholder pruning (11) | Implemented; reviewed, unreleased |
 | F05 | [History change feed](F05-history-change-feed.md) | Medium | Snapshot-shape diffing for incremental saves (11) | Open |
 | F06 | [Tool decision with a response](F06-tool-decision-respond.md) | Medium | Dedup served inside `HarnessExecutor` (05) | Open |
 | F07 | [Panic-safe tool execution](F07-panic-safe-tools.md) | Medium | `catch_unwind` in `HarnessExecutor` (05) | Open |

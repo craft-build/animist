@@ -267,6 +267,22 @@ impl History {
         self.commit(snapshot, plan).await
     }
 
+    /// Squashes only an unchanged result entry owned by the running agent.
+    pub(crate) async fn squash_tool_result(
+        &self,
+        index: usize,
+        expected: &HistoryEntry,
+    ) -> Result<(), HistoryError> {
+        let mut snapshot = self.snapshot().await;
+        ensure!(snapshot.entries.get(index) == Some(expected), ConflictSnafu);
+        snapshot.entries[index].squash_revisions();
+        let mut state = self.history.write().await;
+        ensure!(state.generation == snapshot.generation, ConflictSnafu);
+        state.entries = snapshot.entries;
+        state.generation += 1;
+        Ok(())
+    }
+
     async fn commit(
         &self,
         snapshot: HistorySnapshot,

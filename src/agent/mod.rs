@@ -346,11 +346,12 @@ impl Agent {
                 .await?;
             let mut failure = None;
             let mut cursor = 0;
+            let mut result_entry = HistoryEntry::builder()
+                .source(result_message.clone())
+                .build();
             while cursor < calls.len() {
                 let mut expected = self.history.snapshot().await.entries().to_vec();
-                if expected.get(result_index).and_then(HistoryEntry::current)
-                    != Some(&result_message)
-                {
+                if expected.get(result_index) != Some(&result_entry) {
                     return Err(error::HistoryChangedSnafu {
                         messages: vec![result_message],
                     }
@@ -432,7 +433,13 @@ impl Agent {
                         .source(entry.verbatim().clone())
                         .revisions(revisions)
                         .build();
+                    result_entry.clone_from(&expected[result_index]);
                 }
+            }
+            if !calls.is_empty() {
+                self.history
+                    .squash_tool_result(result_index, &result_entry)
+                    .await?;
             }
             run.emit(AgentEvent::StepFinished {
                 message: response.message.clone(),

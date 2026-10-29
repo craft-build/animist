@@ -1297,6 +1297,218 @@ async fn nested_dispatch_shares_the_run_budget_without_permit_deadlock() {
 }
 
 #[tokio::test]
+async fn ten_call_steps_retain_only_the_placeholder_and_ordered_final_results() {
+    use animist::agent::tool::ToolScheduling;
+    use animist::history::{History, HistoryEntry};
+
+    for limit in [1_usize, 10] {
+        let original = input();
+        let mut first = original.clone();
+        first.tags_mut().insert("revision".into(), "first".into());
+        let mut second = first.clone();
+        second.tags_mut().insert("revision".into(), "second".into());
+        let application_entry = HistoryEntry::builder()
+            .source(original)
+            .revisions(vec![first, second])
+            .build();
+        let finished = Arc::new(Mutex::new(Vec::new()));
+        let mut tools = ToolRegistry::default();
+        tools
+            .register(ScheduledTool {
+                active: Arc::default(),
+                peak: Arc::default(),
+                finished: Arc::clone(&finished),
+                claims: ToolScheduling::Resources {
+                    reads: vec![],
+                    writes: vec![],
+                },
+            })
+            .unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        (1..=10)
+                            .rev()
+                            .map(|delay| call(&format!("call-{delay}"), "scheduled", json!(delay)))
+                            .collect(),
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Arc::default(),
+            ))
+            .history(History::from_entries(vec![application_entry.clone()]))
+            .tools(tools)
+            .config(AgentConfig::builder().max_concurrent_tools(limit).build())
+            .build();
+        agent.run(input(), RunOptions::default()).await.unwrap();
+        let snapshot = agent.history().snapshot().await;
+        assert_eq!(snapshot.entries()[0], application_entry);
+        let result = &snapshot.entries()[3];
+        assert_eq!(result.revisions().len(), 1, "concurrency limit {limit}");
+        assert_eq!(result.verbatim().message().content.len(), 10);
+        assert!(result.verbatim().message().content.iter().all(|block| {
+            matches!(block, ContentBlock::ToolResult { is_error: true, content, .. }
+                if matches!(&content.0[..], [ToolContent::Text { text }] if text.contains("interrupted")))
+        }));
+        let expected: Vec<_> = (1..=10)
+            .rev()
+            .map(|delay| ContentBlock::ToolResult {
+                tool_use_id: format!("call-{delay}"),
+                content: delay.to_string().into(),
+                is_error: false,
+                loaded_tools: Vec::new(),
+            })
+            .collect();
+        assert_eq!(result.latest().message().content, expected);
+        assert_eq!(result.latest().timestamp(), result.verbatim().timestamp());
+        assert_eq!(result.latest().tags(), result.verbatim().tags());
+        assert_eq!(finished.lock().await.len(), 10);
+        let encoded = serde_json::to_string(snapshot.entries()).unwrap();
+        let restored = History::from_entries(serde_json::from_str(&encoded).unwrap());
+        assert_eq!(restored.snapshot().await.entries(), snapshot.entries());
+    }
+}
+
+#[tokio::test]
+async fn application_revisions_on_an_in_flight_result_are_preserved_and_conflict() {
+    use animist::history::{
+        Alteration, CompactionEdit, CompactionPlan, Compactor, HistorySnapshot,
+    };
+
+    struct TagResults;
+
+    #[async_trait]
+    impl Alteration for TagResults {
+        async fn call(
+            &self,
+            message: &StoredMessage,
+        ) -> Result<Option<StoredMessage>, animist::Error> {
+            if !message
+                .message()
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+            {
+                return Ok(None);
+            }
+            let mut revision = message.clone();
+            revision
+                .tags_mut()
+                .insert("application".into(), "tag".into());
+            Ok(Some(revision))
+        }
+    }
+
+    struct DuplicateResult;
+
+    #[async_trait]
+    impl Compactor for DuplicateResult {
+        async fn call(&self, snapshot: &HistorySnapshot) -> Result<CompactionPlan, animist::Error> {
+            Ok(CompactionPlan::builder()
+                .edits(vec![CompactionEdit::Replace {
+                    index: 2,
+                    message: snapshot.entries()[2].latest().clone(),
+                }])
+                .build())
+        }
+    }
+
+    struct ReviseDuringSecondCall(AtomicUsize);
+
+    #[async_trait]
+    impl LayerImpl for ReviseDuringSecondCall {
+        async fn pre_tool_exec(
+            &self,
+            agent: &Agent,
+            _: &ToolContext<'_>,
+        ) -> animist::agent::Result<animist::agent::ToolDecision> {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 1 {
+                agent.history().alter(TagResults).await?;
+                agent.history().compact(DuplicateResult).await?;
+            }
+            Ok(animist::agent::ToolDecision::Run)
+        }
+    }
+
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(Arc::default())).unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(
+                vec![
+                    call("first", "echo", json!({"text": "first"})),
+                    call("second", "echo", json!({"text": "second"})),
+                ],
+                StopReason::ToolUse,
+            )],
+            false,
+            Arc::default(),
+        ))
+        .tools(tools)
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(ReviseDuringSecondCall(AtomicUsize::new(0))))
+                .build(),
+        )
+        .build();
+    assert!(agent.run(input(), RunOptions::default()).await.is_err());
+    let snapshot = agent.history().snapshot().await;
+    let result = &snapshot.entries()[2];
+    assert_eq!(result.revisions().len(), 3);
+    assert_eq!(result.revisions()[1].tags()["application"], "tag");
+    assert_eq!(result.revisions()[1], result.revisions()[2]);
+}
+
+#[tokio::test]
+async fn dropping_after_a_partial_completion_keeps_completed_and_interrupted_results() {
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(Arc::default())).unwrap();
+    tools.register(HangTool).unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![response(
+                vec![
+                    call("first", "echo", json!({"text": "completed"})),
+                    call("second", "hang", json!({})),
+                ],
+                StopReason::ToolUse,
+            )],
+            false,
+            Arc::default(),
+        ))
+        .tools(tools)
+        .build();
+    let (tx, rx) = flume::unbounded();
+    let mut running = Box::pin(agent.run(input(), RunOptions::builder().events(tx).build()));
+    loop {
+        tokio::select! {
+            result = &mut running => panic!("unexpected result: {result:?}"),
+            event = rx.recv_async() => if matches!(event.unwrap(), AgentEvent::ToolProgress { .. }) {
+                break;
+            }
+        }
+    }
+    drop(running);
+    let snapshot = agent.history().snapshot().await;
+    let result = &snapshot.entries()[2];
+    assert_eq!(result.revisions().len(), 1);
+    assert!(result.verbatim().message().content.iter().all(|block| {
+        matches!(block, ContentBlock::ToolResult { is_error: true, content, .. }
+            if matches!(&content.0[..], [ToolContent::Text { text }] if text.contains("interrupted")))
+    }));
+    assert!(matches!(&result.latest().message().content[0],
+        ContentBlock::ToolResult { is_error: false, content, .. }
+            if content == &"completed".into()));
+    assert!(matches!(&result.latest().message().content[1],
+        ContentBlock::ToolResult { is_error: true, content, .. }
+            if matches!(&content.0[..], [ToolContent::Text { text }] if text.contains("interrupted"))));
+    animist::protocol::validate_replay(&agent.history().current().await, &[]).unwrap();
+}
+
+#[tokio::test]
 async fn parallel_cancellation_and_drop_leave_no_tasks_or_orphan_results() {
     for cancel in [false, true] {
         let active = Arc::new(AtomicUsize::new(0));
@@ -2248,7 +2460,7 @@ async fn cooperative_tool_cancellation_closes_every_call() {
             .all(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
     );
     let snapshot = agent.history().snapshot().await;
-    assert_eq!(snapshot.entries()[2].revisions().len(), 2);
+    assert_eq!(snapshot.entries()[2].revisions().len(), 1);
 }
 
 #[tokio::test]

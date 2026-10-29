@@ -65,4 +65,22 @@ rebuild added for memory.
 
 ## Completion note
 
-_(fill in when done)_
+Implemented option 1: an agent-only completion squash retains the placeholder
+source and final stored revision before `StepFinished`, including when all calls
+close after cancellation or failure. The internal operation checks entry ownership
+and the history generation; application changes to the in-flight result conflict
+rather than being pruned. Application alterations and compaction replacements on
+other entries remain untouched. No public API or serialization changes.
+
+`docs/history.md` specifies completion, drop, and cancellation retention. Tests
+cover ten calls across serial waves and concurrent execution, call-order results,
+placeholder and metadata preservation, serialization round trips, partial-drop
+recovery, cooperative cancellation, and application revisions.
+
+Validation passed: `cargo fmt --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`,
+`cargo test --features bedrock`, and `cargo doc --no-deps`. The live catalog
+test remains ignored. Full-diff review returned a clean verdict with no
+medium-or-higher findings.
+
+Unreleased; Craft persistence cleanup remains a post-release task.

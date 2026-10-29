@@ -89,6 +89,14 @@ impl HistoryEntry {
         self.revisions.push(message);
     }
 
+    pub(super) fn squash_revisions(&mut self) {
+        if let Some(latest) = self.revisions.pop() {
+            self.revisions.clear();
+            self.revisions.push(latest);
+            self.revisions.shrink_to_fit();
+        }
+    }
+
     pub(super) fn deactivate(&mut self) {
         self.active = false;
     }

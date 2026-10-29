@@ -50,7 +50,7 @@ discarding its original or revisions.
 | `verbatim()` | Original | All |
 
 Revisions contain `StoredMessage`, preserving each version's content, timestamp,
-and tags. Replacing a message never changes its original or earlier revisions.
+and tags. Application replacements never change the original or earlier revisions.
 `HistoryEntry::latest()` also exposes the latest stored revision of inactive
 entries for inspection. The history views return `Message` for inference; use
 snapshot entries to inspect metadata.
@@ -63,6 +63,30 @@ generation are runtime state, not persisted settings.
 The entry serialization shape replaces the earlier tagged
 `Active`/`Inactive`/`Altered` representation; no legacy-format migration is
 provided.
+
+### Agent tool-result revision retention
+
+Before tools execute, the agent stores a source message with an interrupted
+placeholder for every call. Each completion appends a progress revision, with
+results kept in call order. Once every call has a result (including errors,
+cancellations, and skipped calls), the agent squashes its intermediate revisions,
+retaining exactly the placeholder source and one final stored revision, with
+their timestamps and tags unchanged. Squashing precedes `StepFinished` and
+step-end callbacks, including when a tool failure ends the run.
+
+This is an agent-only completion policy, not a general compaction edit: it avoids
+expanding the public edit API for a runtime-owned lifecycle. Application-created
+revisions from alterations and compaction `Replace` are never implicitly
+squashed, including on older tool-result entries. If an application changes the
+in-flight result entry, the agent reports a conflict instead of pruning it.
+Squashing commits under the history generation check, just like other edits.
+
+Dropping the run before completion leaves the placeholder source and all progress
+revisions committed so far. The latest revision keeps completed results and
+explicit interrupted placeholders for unfinished calls. Cooperative cancellation
+that finishes closing every call retains the source and one final revision.
+There is no snapshot or serialization format change; already captured snapshots
+and older persisted entries retain their existing revision sequences.
 
 ### Tool-result content compatibility
 
