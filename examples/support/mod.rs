@@ -268,11 +268,6 @@ pub(crate) async fn run(
                     ProviderEvent::ToolInputDelta { id, partial_json } => {
                         ("tool-input", format!("{id}: {partial_json}\n"))
                     }
-                    ProviderEvent::PromptProgress {
-                        processed,
-                        total,
-                        cache,
-                    } => ("progress", format!("{processed}/{total}, cache={cache}\n")),
                 };
                 if label != previous {
                     stdout

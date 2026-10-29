@@ -3,17 +3,17 @@
 use async_trait::async_trait;
 use bon::Builder;
 use flume::Sender;
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snafu::{ResultExt, ensure};
-use tokio::sync::RwLock;
 
+use super::credential::ApiKey;
+use super::http::ensure_success;
 use super::{
     Config, Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse,
     Features, Message, Model, ModelInfo, Pricing, ProviderEvent, ProviderImpl, RequestOptions,
-    Result, StreamResponse, Thinking, ThinkingConfig, ThinkingSupport, Tier, Tool, error,
-    read_error_body,
+    Result, StreamResponse, Thinking, ThinkingConfig, Tier, Tool, error,
 };
 use crate::{
     catalog::CatalogModel,
@@ -62,38 +62,17 @@ impl Default for SyntheticConfig {
 pub struct Synthetic {
     config: SyntheticConfig,
     client: reqwest::Client,
-    auth: RwLock<HeaderValue>,
-    from_env: bool,
+    key: ApiKey,
 }
 
 impl Synthetic {
     /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: SyntheticConfig) -> Result<Self> {
-        let from_env = config.api_key.is_none();
-        let key = if let Some(key) = config.api_key.take() {
-            ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
-            key
-        } else {
-            let key =
-                std::env::var(&config.api_key_env).context(error::CredentialEnvironmentSnafu {
-                    variable: &config.api_key_env,
-                })?;
-            ensure!(
-                !key.trim().is_empty(),
-                error::CredentialsSnafu {
-                    variable: &config.api_key_env
-                }
-            );
-            key
-        };
-        let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
-            .context(error::CredentialHeaderSnafu)?;
-        auth.set_sensitive(true);
+        let key = ApiKey::new(config.api_key.take(), &config.api_key_env, "Bearer ")?;
         Ok(Self {
             config,
             client: reqwest::Client::new(),
-            auth: RwLock::new(auth),
-            from_env,
+            key,
         })
     }
 
@@ -116,7 +95,7 @@ impl Synthetic {
                 method,
                 format!("{}/{}", self.config.base_url.trim_end_matches('/'), path),
             )
-            .header(AUTHORIZATION, self.auth.read().await.clone());
+            .header(AUTHORIZATION, self.key.header().await);
         if let Some(body) = body {
             request = request
                 .header(
@@ -129,25 +108,14 @@ impl Synthetic {
                 )
                 .json(&body);
         }
-        let response = request.send().await.context(error::TransportSnafu)?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let (body, body_truncated) = read_error_body(response).await?;
-            return error::HttpSnafu {
-                status,
-                body,
-                body_truncated,
-            }
-            .fail();
-        }
-        Ok(response)
+        ensure_success(request.send().await.context(error::TransportSnafu)?).await
     }
 
     /// Discovers text models and preserves their complete Synthetic metadata.
     /// Prices are USD per million tokens; absent rates are not known-free.
     pub async fn model_catalog(&self) -> Result<Vec<CatalogModel>> {
         let response = self.send(reqwest::Method::GET, "models", None).await?;
-        let bytes = response.bytes().await.context(error::TransportSnafu)?;
+        let bytes = crate::protocol::body::read_body(response).await?;
         let models: Models =
             serde_json::from_slice(&bytes).context(error::DecodeSyntheticModelsSnafu)?;
         let mut catalog = Vec::new();
@@ -203,12 +171,8 @@ impl ProviderImpl for Synthetic {
             }
         );
         let thinking = &model.info.features.thinking;
-        let (supported, required) = match model.overrides.thinking {
-            Some(ThinkingSupport::No) => (false, false),
-            Some(ThinkingSupport::Yes) => (true, false),
-            Some(ThinkingSupport::Required) => (true, true),
-            None => (thinking.supported, thinking.required),
-        };
+        let supported = model.thinking_supported();
+        let required = model.thinking_required();
         let effort = match &options.thinking {
             ThinkingConfig::Off if required => return error::ReasoningRequiredSnafu.fail(),
             ThinkingConfig::Off => supported.then_some("none"),
@@ -267,24 +231,7 @@ impl ProviderImpl for Synthetic {
     }
 
     async fn reload_auth(&self) -> Result<()> {
-        if self.from_env {
-            let key = std::env::var(&self.config.api_key_env).context(
-                error::CredentialEnvironmentSnafu {
-                    variable: &self.config.api_key_env,
-                },
-            )?;
-            ensure!(
-                !key.trim().is_empty(),
-                error::CredentialsSnafu {
-                    variable: &self.config.api_key_env
-                }
-            );
-            let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
-                .context(error::CredentialHeaderSnafu)?;
-            auth.set_sensitive(true);
-            *self.auth.write().await = auth;
-        }
-        Ok(())
+        self.key.reload().await
     }
 }
 

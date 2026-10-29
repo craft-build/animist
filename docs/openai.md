@@ -62,7 +62,7 @@ are still controlled by OpenAI.
 Explicit reasoning efforts must appear in the model's advertised effort list.
 Token budgets and the `Adaptive` and `Max` effort *values* are unsupported;
 `ThinkingConfig::Adaptive` instead leaves effort to OpenAI and requests a
-Responses reasoning summary. `ThinkingConfig::Off` omits reasoning options for
+Responses reasoning summary; it is rejected for models without reasoning support. `ThinkingConfig::Off` omits reasoning options for
 non-reasoning models and requests effort `"none"` for reasoning-capable models.
 Models marked as requiring reasoning reject `Off` locally. Some reasoning
 models do not support `"none"`; select `Adaptive` or a supported effort for

@@ -409,3 +409,45 @@ async fn successful_terminal_usage_supersedes_the_last_queued_checkpoint() {
     ));
     assert_eq!(exchange.partial().usage, Some(expected));
 }
+
+#[tokio::test]
+async fn chat_accepts_empty_tool_arguments_and_duplicate_reasoning_keys() {
+    let mut body = sse(&[
+        json!({"choices":[{"index":0,"delta":{
+            "reasoning_content":"plan","reasoning":"plan",
+            "tool_calls":[{"index":0,"id":"call","function":{"name":"ping","arguments":""}}]
+        }}]}),
+        json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+        json!({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1}}),
+    ]);
+    body.push_str("data: [DONE]\n\n");
+    let (response, server) = fixture(body).await;
+    let (tx, _rx) = flume::unbounded();
+    let response = ChatCompletions.assemble(response, &tx).await.unwrap();
+    assert!(
+        matches!(&response.message.content[0], ContentBlock::Thinking { thinking, .. } if thinking == "plan")
+    );
+    assert!(
+        matches!(&response.message.content[1], ContentBlock::ToolUse { id, input, .. } if id == "call" && input == &json!({}))
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn chat_rejects_tool_arguments_that_are_not_objects() {
+    let (response, server) = fixture(sse(&[
+        json!({"choices":[{"index":0,"delta":{
+            "tool_calls":[{"index":0,"id":"call","function":{"name":"ping","arguments":"[1]"}}]
+        }}]}),
+        json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+    ]))
+    .await;
+    let (tx, _rx) = flume::unbounded();
+    assert!(matches!(
+        ChatCompletions.assemble(response, &tx).await,
+        Err(ProtocolError::OpenAI {
+            source: animist::protocol::openai::OpenAIProtocolError::InvalidToolInput { .. }
+        })
+    ));
+    server.await.unwrap();
+}

@@ -59,7 +59,7 @@ impl Protocol for Converse {
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
         validate_replay(input.messages, input.tools)?;
-        sampling::validate(input.options, "bedrock_converse", 1.0, 0.0, 4)?;
+        sampling::validate(input.options, "bedrock_converse", 1.0, 4)?;
         for (control, explicit) in [
             (
                 "frequency_penalty",
@@ -449,8 +449,12 @@ impl Protocol for Converse {
                             data: STANDARD.encode(data),
                         },
                         AssemblyBlock::Tool { id, name, json } => {
-                            let input: Value = serde_json::from_str(json)
-                                .context(error::DecodeToolInputSnafu { id: &*id })?;
+                            let input = if json.is_empty() {
+                                Value::Object(serde_json::Map::new())
+                            } else {
+                                serde_json::from_str(json)
+                                    .context(error::DecodeToolInputSnafu { id: &*id })?
+                            };
                             ensure!(input.is_object(), error::InvalidToolInputSnafu { id: &*id });
                             ContentBlock::ToolUse {
                                 id: std::mem::take(id),

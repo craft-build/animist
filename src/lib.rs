@@ -2,9 +2,7 @@
 //! provider clients, protocol adapters, revision-preserving history,
 //! and a layered agent runtime.
 //!
-//! Public enums stay exhaustive and structs keep open field lists;
-//! additive changes are breaking changes this crate commits to fixing.
-//! Tests use descriptive sentence names rather than a `test_` prefix.
+//! Public types are not `#[non_exhaustive]`; new variants or fields are breaking.
 
 pub mod agent;
 pub mod catalog;
@@ -13,7 +11,9 @@ pub mod protocol;
 pub mod provider;
 
 /// Re-exported because public signatures accept these types.
-pub use {flume, jiff, reqwest};
+pub use {flume, jiff, reqwest, serde_json};
+#[cfg(feature = "bedrock")]
+pub use {http, url};
 
 #[macro_use]
 extern crate macro_rules_attribute;

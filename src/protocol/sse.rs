@@ -4,6 +4,11 @@ use std::ops::Range;
 
 use snafu::{ResultExt, Snafu, ensure};
 
+/// Largest single event or unread buffer.
+const EVENT_LIMIT: usize = 16 * 1024 * 1024;
+/// Total wire bytes per exchange; far above any realistic generation.
+const EXCHANGE_LIMIT: usize = 256 * 1024 * 1024;
+
 /// SSE framing, UTF-8, and size-limit failures.
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
@@ -96,10 +101,8 @@ impl Events {
                     let data = data.strip_prefix(' ').unwrap_or(data);
                     self.data_len += data.len() + 1;
                     ensure!(
-                        self.data_len <= 16 * 1024 * 1024,
-                        EventTooLargeSnafu {
-                            limit: 16 * 1024 * 1024_usize
-                        }
+                        self.data_len <= EVENT_LIMIT,
+                        EventTooLargeSnafu { limit: EVENT_LIMIT }
                     );
                     self.data.push(end - data.len()..end);
                 }
@@ -137,9 +140,9 @@ impl Events {
             Some(bytes) => {
                 self.received = self.received.saturating_add(bytes.len());
                 ensure!(
-                    self.received <= 16 * 1024 * 1024,
+                    self.received <= EXCHANGE_LIMIT,
                     ExchangeTooLargeSnafu {
-                        limit: 16 * 1024 * 1024_usize
+                        limit: EXCHANGE_LIMIT
                     }
                 );
                 self.buffer.extend_from_slice(&bytes);
@@ -147,10 +150,8 @@ impl Events {
             None => self.eof = true,
         }
         ensure!(
-            self.buffer.len() <= 16 * 1024 * 1024,
-            BufferTooLargeSnafu {
-                limit: 16 * 1024 * 1024_usize
-            }
+            self.buffer.len() <= EVENT_LIMIT,
+            BufferTooLargeSnafu { limit: EVENT_LIMIT }
         );
         Ok(())
     }

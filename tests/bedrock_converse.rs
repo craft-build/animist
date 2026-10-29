@@ -501,7 +501,7 @@ async fn converse_checks_frame_crcs_lengths_headers_and_truncation() {
                 },
             )
             | ("length", EventStreamError::InvalidLengths { .. })
-            | ("limit", EventStreamError::ExchangeTooLarge { .. })
+            | ("limit", EventStreamError::FrameTooLarge { .. })
             | ("truncated", EventStreamError::TruncatedFrame { .. })
             | ("header", EventStreamError::TruncatedHeader { .. })
             | ("duplicate", EventStreamError::DuplicateHeader { .. })
@@ -664,7 +664,7 @@ async fn converse_bounds_total_wire_bytes_even_across_individually_valid_frames(
         }))
         .unwrap(),
     );
-    for _ in 0..17 {
+    for _ in 0..257 {
         bytes.extend_from_slice(&delta);
     }
     let (response, server) = response(bytes, false).await;
@@ -674,7 +674,7 @@ async fn converse_bounds_total_wire_bytes_even_across_individually_valid_frames(
         ProtocolError::Bedrock {
             source: BedrockProtocolError::EventStream {
                 source: EventStreamError::ExchangeTooLarge {
-                    limit: 16_777_216,
+                    limit: 268_435_456,
                     ..
                 }
             }

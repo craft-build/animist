@@ -120,7 +120,7 @@ impl<E: VccExtractor> Compactor for VccWithExtractor<E> {
             let mut line = line;
             let mut size = line.chars().count() + 1;
             if breadcrumbs.is_empty() && chars + size > self.config.max_summary_chars {
-                // The first breadcrumb is always retained, excerpted to fit.
+                // The first breadcrumb is excerpted to fit whatever budget remains.
                 let remaining = self.config.max_summary_chars.saturating_sub(chars + 1);
                 line = excerpt(&line, remaining);
                 size = line.chars().count() + 1;

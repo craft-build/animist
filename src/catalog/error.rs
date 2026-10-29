@@ -8,6 +8,11 @@ use snafu::Snafu;
 pub enum Error {
     #[snafu(display("Failed to fetch catalog from {url}: {source}"))]
     Fetch { url: String, source: reqwest::Error },
+    #[snafu(display("Failed to read catalog from {url}: {source}"))]
+    ReadBody {
+        url: String,
+        source: crate::protocol::BodyError,
+    },
     #[snafu(display("Failed to read catalog {}: {source}", path.display()))]
     Read {
         path: PathBuf,

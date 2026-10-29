@@ -10,6 +10,7 @@ use crate::provider::{Model, ProviderEvent, RequestOptions, StreamResponse, Tool
 pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+pub(crate) mod body;
 mod decider;
 mod embedding;
 mod error;
@@ -19,6 +20,7 @@ pub(crate) mod sampling;
 pub(crate) mod sse;
 pub mod system_one;
 
+pub use body::BodyError;
 pub use decider::DeciderProtocol;
 pub use embedding::EmbeddingProtocol;
 pub use error::ProtocolError;

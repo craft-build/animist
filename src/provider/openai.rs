@@ -3,14 +3,17 @@
 use async_trait::async_trait;
 use bon::Builder;
 use flume::Sender;
+use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use snafu::{OptionExt, ResultExt, ensure};
-use tokio::sync::RwLock;
+use snafu::ResultExt;
 
+use super::credential::ApiKey;
+use super::http::ensure_success;
+use super::thinking::openai_reasoning_effort;
 use super::{
-    Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
-    StreamResponse, ThinkingConfig, ThinkingSupport, Tool, error, read_error_body,
+    Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse,
+    Tool, error,
 };
 use crate::protocol::{
     Protocol as ProtocolAdapter, ProtocolInput,
@@ -26,6 +29,18 @@ pub enum Protocol {
     /// `OpenAI` Responses API surface.
     #[default]
     Responses,
+}
+
+/// `GET /models` page shared by OpenAI-compatible servers.
+#[derive(crate::Struct!, Deserialize)]
+pub(super) struct ModelList {
+    pub data: Vec<ListedModel>,
+}
+
+/// One `GET /models` entry; other fields are not used.
+#[derive(crate::Struct!, Deserialize)]
+pub(super) struct ListedModel {
+    pub id: String,
 }
 
 /// Serializable provider settings; API keys are never serialized.
@@ -68,39 +83,17 @@ impl Default for OpenAiConfig {
 pub struct OpenAi {
     config: OpenAiConfig,
     client: reqwest::Client,
-    key: RwLock<String>,
-    from_env: bool,
+    key: ApiKey,
 }
 
 impl OpenAi {
     /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: OpenAiConfig) -> Result<Self> {
-        let from_env = config.api_key.is_none();
-        let key = match config.api_key.take() {
-            Some(key) if !key.trim().is_empty() => key,
-            Some(_) => {
-                return error::EmptyApiKeySnafu.fail();
-            }
-            None => {
-                let key = std::env::var(&config.api_key_env).context(
-                    error::CredentialEnvironmentSnafu {
-                        variable: &config.api_key_env,
-                    },
-                )?;
-                ensure!(
-                    !key.trim().is_empty(),
-                    error::CredentialsSnafu {
-                        variable: &config.api_key_env
-                    }
-                );
-                key
-            }
-        };
+        let key = ApiKey::new(config.api_key.take(), &config.api_key_env, "Bearer ")?;
         Ok(Self {
             config,
             client: reqwest::Client::new(),
-            key: RwLock::new(key),
-            from_env,
+            key,
         })
     }
 
@@ -117,14 +110,13 @@ impl OpenAi {
         path: &str,
         body: Option<Value>,
     ) -> Result<reqwest::Response> {
-        let key = self.key.read().await.clone();
         let mut request = self
             .client
             .request(
                 method,
                 format!("{}/{}", self.config.base_url.trim_end_matches('/'), path),
             )
-            .bearer_auth(key);
+            .header(AUTHORIZATION, self.key.header().await);
         if let Some(organization) = &self.config.organization {
             request = request.header("OpenAI-Organization", organization);
         }
@@ -134,48 +126,7 @@ impl OpenAi {
         if let Some(body) = body {
             request = request.header("Accept", "text/event-stream").json(&body);
         }
-        let response = request.send().await.context(error::TransportSnafu)?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let (body, body_truncated) = read_error_body(response).await?;
-            return error::HttpSnafu {
-                status,
-                body,
-                body_truncated,
-            }
-            .fail();
-        }
-        Ok(response)
-    }
-}
-
-fn reasoning_effort(model: &Model, options: &RequestOptions) -> Result<Option<&'static str>> {
-    let support = match model.overrides.thinking {
-        Some(ThinkingSupport::No) => false,
-        Some(ThinkingSupport::Yes | ThinkingSupport::Required) => true,
-        None => model.info.features.thinking.supported,
-    };
-    let required = match model.overrides.thinking {
-        Some(ThinkingSupport::Required) => true,
-        Some(_) => false,
-        None => model.info.features.thinking.required,
-    };
-    match &options.thinking {
-        ThinkingConfig::Off if required => error::ReasoningRequiredSnafu.fail(),
-        ThinkingConfig::Off if support => Ok(Some("none")),
-        ThinkingConfig::Off | ThinkingConfig::Adaptive => Ok(None),
-        ThinkingConfig::Budget(_) => error::ReasoningBudgetUnsupportedSnafu.fail(),
-        ThinkingConfig::Effort(effort) => {
-            ensure!(
-                support
-                    && !matches!(effort, Effort::Adaptive | Effort::Max)
-                    && model.info.features.thinking.efforts.contains(effort),
-                error::UnsupportedReasoningEffortSnafu {
-                    effort: effort.clone()
-                }
-            );
-            Ok(effort.openai_wire())
-        }
+        ensure_success(request.send().await.context(error::TransportSnafu)?).await
     }
 }
 
@@ -205,7 +156,7 @@ impl ProviderImpl for OpenAi {
             return error::FastModeDisabledSnafu.fail();
         }
         let protocol_options = OpenAiOptions::builder()
-            .maybe_reasoning_effort(reasoning_effort(model, &options)?)
+            .maybe_reasoning_effort(openai_reasoning_effort(model, &options.thinking)?)
             .build();
         let (path, protocol): (
             &str,
@@ -232,24 +183,23 @@ impl ProviderImpl for OpenAi {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let response = self.send(reqwest::Method::GET, "models", None).await?;
-        let value: Value = response.json().await.context(error::TransportSnafu)?;
-        let data = value["data"]
-            .as_array()
-            .context(error::MissingModelDataSnafu)?;
-        data.iter()
-            .map(|entry| {
-                let id = entry["id"].as_str().context(error::MissingModelIdSnafu)?;
+        let bytes = crate::protocol::body::read_body(response).await?;
+        let models: ModelList = serde_json::from_slice(&bytes).context(error::DecodeModelsSnafu)?;
+        Ok(models
+            .data
+            .into_iter()
+            .map(|model| {
                 let mut info = self
                     .config
                     .catalog
                     .as_ref()
-                    .and_then(|catalog| catalog.models.get(id))
+                    .and_then(|catalog| catalog.models.get(&model.id))
                     .map(|model| model.info.clone())
                     .unwrap_or_default();
-                info.ids = vec![id.into()];
-                Ok(info)
+                info.ids = vec![model.id];
+                info
             })
-            .collect()
+            .collect())
     }
 
     async fn refresh_auth(&self) -> Result<()> {
@@ -257,20 +207,6 @@ impl ProviderImpl for OpenAi {
     }
 
     async fn reload_auth(&self) -> Result<()> {
-        if self.from_env {
-            let key = std::env::var(&self.config.api_key_env).context(
-                error::CredentialEnvironmentSnafu {
-                    variable: &self.config.api_key_env,
-                },
-            )?;
-            ensure!(
-                !key.trim().is_empty(),
-                error::CredentialsSnafu {
-                    variable: &self.config.api_key_env
-                }
-            );
-            *self.key.write().await = key;
-        }
-        Ok(())
+        self.key.reload().await
     }
 }

@@ -5,7 +5,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use snafu::{ResultExt, ensure};
 
-use super::{Bedrock, ModelInfo, Result, error};
+use super::{Bedrock, error};
+use crate::provider::{ModelInfo, Result};
 
 /// Total JSON response bytes allowed across one discovery operation.
 const LISTING_LIMIT: usize = 16 * 1024 * 1024;

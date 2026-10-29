@@ -5,16 +5,17 @@ use std::num::NonZeroU32;
 use async_trait::async_trait;
 use bon::Builder;
 use flume::Sender;
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snafu::{ResultExt, ensure};
-use tokio::sync::RwLock;
 
+use super::credential::ApiKey;
+use super::http::ensure_success;
 use super::{
     Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message,
     Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse,
-    ThinkingConfig, ThinkingSupport, Tool, error, read_error_body,
+    ThinkingConfig, Tool, error,
 };
 use crate::protocol::{
     EmbeddingProtocol, Protocol, ProtocolInput,
@@ -53,43 +54,21 @@ impl Default for OmlxConfig {
 pub struct Omlx {
     config: OmlxConfig,
     client: reqwest::Client,
-    auth: RwLock<Option<HeaderValue>>,
-    from_env: bool,
+    key: Option<ApiKey>,
 }
 
 impl Omlx {
     /// Resolves credentials and binds the provider to its settings.
     pub fn new(mut config: OmlxConfig) -> Result<Self> {
-        let from_env = config.api_key.is_none();
-        let key = match config.api_key.take() {
-            Some(key) => {
-                ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
-                Some(key)
-            }
-            None => match &config.api_key_env {
-                Some(variable) => {
-                    let key = std::env::var(variable)
-                        .context(error::CredentialEnvironmentSnafu { variable })?;
-                    ensure!(!key.trim().is_empty(), error::CredentialsSnafu { variable });
-                    Some(key)
-                }
-                None => None,
-            },
-        };
-        let auth = match key {
-            Some(key) => {
-                let mut header = HeaderValue::from_str(&format!("Bearer {key}"))
-                    .context(error::CredentialHeaderSnafu)?;
-                header.set_sensitive(true);
-                Some(header)
-            }
-            None => None,
-        };
+        let key = ApiKey::optional(
+            config.api_key.take(),
+            config.api_key_env.as_deref(),
+            "Bearer ",
+        )?;
         Ok(Self {
             config,
             client: reqwest::Client::new(),
-            auth: RwLock::new(auth),
-            from_env,
+            key,
         })
     }
 
@@ -110,8 +89,8 @@ impl Omlx {
             method,
             format!("{}/{}", self.config.base_url.trim_end_matches('/'), path),
         );
-        if let Some(auth) = self.auth.read().await.clone() {
-            request = request.header(AUTHORIZATION, auth);
+        if let Some(key) = &self.key {
+            request = request.header(AUTHORIZATION, key.header().await);
         }
         if let Some(body) = body {
             request = request
@@ -125,18 +104,7 @@ impl Omlx {
                 )
                 .json(&body);
         }
-        let response = request.send().await.context(error::TransportSnafu)?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let (body, body_truncated) = read_error_body(response).await?;
-            return error::HttpSnafu {
-                status,
-                body,
-                body_truncated,
-            }
-            .fail();
-        }
-        Ok(response)
+        ensure_success(request.send().await.context(error::TransportSnafu)?).await
     }
 }
 
@@ -169,12 +137,8 @@ impl ProviderImpl for Omlx {
             }
         );
         let thinking = &model.info.features.thinking;
-        let (supported, required) = match model.overrides.thinking {
-            Some(ThinkingSupport::No) => (false, false),
-            Some(ThinkingSupport::Yes) => (true, false),
-            Some(ThinkingSupport::Required) => (true, true),
-            None => (thinking.supported, thinking.required),
-        };
+        let supported = model.thinking_supported();
+        let required = model.thinking_required();
         let (enabled, budget, effort) = match &options.thinking {
             ThinkingConfig::Off if required => return error::ReasoningRequiredSnafu.fail(),
             ThinkingConfig::Off => (Some(false), Some(0), None),
@@ -226,7 +190,7 @@ impl ProviderImpl for Omlx {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let response = self.send(reqwest::Method::GET, "models", None).await?;
-        let bytes = response.bytes().await.context(error::TransportSnafu)?;
+        let bytes = crate::protocol::body::read_body(response).await?;
         let models: Models =
             serde_json::from_slice(&bytes).context(error::DecodeOmlxModelsSnafu)?;
         Ok(models
@@ -254,16 +218,8 @@ impl ProviderImpl for Omlx {
     }
 
     async fn reload_auth(&self) -> Result<()> {
-        if self.from_env
-            && let Some(variable) = &self.config.api_key_env
-        {
-            let key =
-                std::env::var(variable).context(error::CredentialEnvironmentSnafu { variable })?;
-            ensure!(!key.trim().is_empty(), error::CredentialsSnafu { variable });
-            let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
-                .context(error::CredentialHeaderSnafu)?;
-            auth.set_sensitive(true);
-            *self.auth.write().await = Some(auth);
+        if let Some(key) = &self.key {
+            key.reload().await?;
         }
         Ok(())
     }

@@ -46,13 +46,7 @@ impl Protocol for Messages {
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
         crate::protocol::validate_replay(input.messages, input.tools)?;
-        crate::protocol::sampling::validate(
-            input.options,
-            "anthropic_messages",
-            1.0,
-            0.0,
-            usize::MAX,
-        )?;
+        crate::protocol::sampling::validate(input.options, "anthropic_messages", 1.0, usize::MAX)?;
         for (control, explicit) in [
             (
                 "frequency_penalty",

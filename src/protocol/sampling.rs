@@ -49,12 +49,11 @@ pub(crate) fn validate(
     options: &RequestOptions,
     boundary: &'static str,
     temperature_max: f64,
-    top_p_min: f64,
     max_stops: usize,
 ) -> super::Result<()> {
     for (control, value, min, max) in [
         ("temperature", options.temperature, 0.0, temperature_max),
-        ("top_p", options.top_p, top_p_min, 1.0),
+        ("top_p", options.top_p, 0.0, 1.0),
         ("frequency_penalty", options.frequency_penalty, -2.0, 2.0),
         ("presence_penalty", options.presence_penalty, -2.0, 2.0),
     ] {

@@ -795,5 +795,5 @@ async fn responses_keeps_interleaved_tool_identity_and_output_order() {
     );
     let (_, request) = task.await.unwrap();
     assert_eq!(request["input"][0]["role"], "assistant");
-    assert_eq!(request["input"][0]["content"][0]["type"], "input_text");
+    assert_eq!(request["input"][0]["content"][0]["type"], "output_text");
 }

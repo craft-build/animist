@@ -5,12 +5,14 @@ use bon::Builder;
 use flume::Sender;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use snafu::{OptionExt, ResultExt, ensure};
+use snafu::{ResultExt, ensure};
 
+use super::http::ensure_success;
+use super::openai::ModelList;
 use super::{
     Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message,
     Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse,
-    ThinkingConfig, ThinkingSupport, Tool, error, read_error_body,
+    ThinkingConfig, Tool, error,
 };
 use crate::protocol::{
     EmbeddingProtocol, Protocol, ProtocolInput,
@@ -18,7 +20,7 @@ use crate::protocol::{
 };
 
 /// Serializable local Ollama settings; no credentials are required.
-#[derive(Debug, Clone, PartialEq, Builder, Serialize, Deserialize)]
+#[derive(crate::StructWithCustomDefault!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
 #[serde(default, rename_all = "snake_case")]
 pub struct OllamaConfig {
@@ -80,18 +82,7 @@ impl Ollama {
                 )
                 .json(&body);
         }
-        let response = request.send().await.context(error::TransportSnafu)?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let (body, body_truncated) = read_error_body(response).await?;
-            return error::HttpSnafu {
-                status,
-                body,
-                body_truncated,
-            }
-            .fail();
-        }
-        Ok(response)
+        ensure_success(request.send().await.context(error::TransportSnafu)?).await
     }
 }
 
@@ -124,12 +115,8 @@ impl ProviderImpl for Ollama {
             }
         );
         let thinking = &model.info.features.thinking;
-        let (supported, required) = match model.overrides.thinking {
-            Some(ThinkingSupport::No) => (false, false),
-            Some(ThinkingSupport::Yes) => (true, false),
-            Some(ThinkingSupport::Required) => (true, true),
-            None => (thinking.supported, thinking.required),
-        };
+        let supported = model.thinking_supported();
+        let required = model.thinking_required();
         let effort = match &options.thinking {
             ThinkingConfig::Off if required => return error::ReasoningRequiredSnafu.fail(),
             ThinkingConfig::Off => Some("none"),
@@ -174,24 +161,23 @@ impl ProviderImpl for Ollama {
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
         let response = self.send(reqwest::Method::GET, "models", None).await?;
-        let value: Value = response.json().await.context(error::TransportSnafu)?;
-        let data = value["data"]
-            .as_array()
-            .context(error::MissingModelDataSnafu)?;
-        data.iter()
-            .map(|entry| {
-                let id = entry["id"].as_str().context(error::MissingModelIdSnafu)?;
+        let bytes = crate::protocol::body::read_body(response).await?;
+        let models: ModelList = serde_json::from_slice(&bytes).context(error::DecodeModelsSnafu)?;
+        Ok(models
+            .data
+            .into_iter()
+            .map(|model| {
                 let mut info = self
                     .config
                     .catalog
                     .as_ref()
-                    .and_then(|catalog| catalog.models.get(id))
+                    .and_then(|catalog| catalog.models.get(&model.id))
                     .map(|model| model.info.clone())
                     .unwrap_or_default();
-                info.ids = vec![id.into()];
-                Ok(info)
+                info.ids = vec![model.id];
+                info
             })
-            .collect()
+            .collect())
     }
 
     async fn refresh_auth(&self) -> Result<()> {

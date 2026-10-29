@@ -101,3 +101,4 @@ repository.
   crates can name it through a public module or re-export.
 - Validate public API changes with integration tests that exercise the API from
   outside the crate.
+- Name tests with descriptive sentences rather than a `test_` prefix.

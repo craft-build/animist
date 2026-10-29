@@ -26,6 +26,8 @@ pub enum ProviderError {
     Protocol {
         source: crate::protocol::ProtocolError,
     },
+    #[snafu(transparent)]
+    Body { source: crate::protocol::BodyError },
     #[snafu(display("Explicit API key is empty"))]
     EmptyApiKey { backtrace: snafu::Backtrace },
     #[snafu(display("This model requires reasoning"))]
@@ -45,10 +47,8 @@ pub enum ProviderError {
     },
     #[snafu(display("Fast mode is disabled for this model"))]
     FastModeDisabled { backtrace: snafu::Backtrace },
-    #[snafu(display("Model listing has no data array"))]
-    MissingModelData { backtrace: snafu::Backtrace },
-    #[snafu(display("Model listing entry has no model ID"))]
-    MissingModelId { backtrace: snafu::Backtrace },
+    #[snafu(display("Invalid model listing: {source}"))]
+    DecodeModels { source: serde_json::Error },
     #[snafu(display("Credential environment variable {variable} is missing or empty"))]
     Credentials {
         variable: String,

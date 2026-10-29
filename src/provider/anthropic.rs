@@ -8,15 +8,17 @@ use flume::Sender;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
-use tokio::sync::RwLock;
 
+use super::credential::ApiKey;
+use super::http::ensure_success;
+use super::thinking::anthropic_thinking;
 use super::{
     Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
-    StreamResponse, ThinkingConfig, ThinkingSupport, Tool, error, read_error_body,
+    StreamResponse, Tool, error,
 };
 use crate::protocol::{
     Protocol, ProtocolInput,
-    anthropic::{AnthropicEffort, AnthropicOptions, AnthropicThinking, Messages},
+    anthropic::{AnthropicOptions, Messages},
 };
 
 /// Serializable Anthropic settings; API keys are never serialized.
@@ -61,35 +63,17 @@ impl Default for AnthropicConfig {
 pub struct Anthropic {
     config: AnthropicConfig,
     client: reqwest::Client,
-    key: RwLock<String>,
-    from_env: bool,
+    key: ApiKey,
 }
 
 impl Anthropic {
     /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: AnthropicConfig) -> Result<Self> {
-        let from_env = config.api_key.is_none();
-        let key = if let Some(key) = config.api_key.take() {
-            ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
-            key
-        } else {
-            let key =
-                std::env::var(&config.api_key_env).context(error::CredentialEnvironmentSnafu {
-                    variable: &config.api_key_env,
-                })?;
-            ensure!(
-                !key.trim().is_empty(),
-                error::CredentialsSnafu {
-                    variable: &config.api_key_env
-                }
-            );
-            key
-        };
+        let key = ApiKey::new(config.api_key.take(), &config.api_key_env, "")?;
         Ok(Self {
             config,
             client: reqwest::Client::new(),
-            key: RwLock::new(key),
-            from_env,
+            key,
         })
     }
 
@@ -108,16 +92,13 @@ impl Anthropic {
         after_id: Option<&str>,
         fast: bool,
     ) -> Result<reqwest::Response> {
-        let mut key = reqwest::header::HeaderValue::from_str(self.key.read().await.as_str())
-            .context(error::CredentialHeaderSnafu)?;
-        key.set_sensitive(true);
         let mut request = self
             .client
             .request(
                 method,
                 format!("{}/{}", self.config.base_url.trim_end_matches('/'), path),
             )
-            .header("x-api-key", key)
+            .header("x-api-key", self.key.header().await)
             .header("anthropic-version", &self.config.version);
         let mut beta = self.config.beta.clone();
         if fast && !beta.iter().any(|beta| beta == "fast-mode-2026-02-01") {
@@ -132,18 +113,7 @@ impl Anthropic {
         if let Some(body) = body {
             request = request.header("Accept", "text/event-stream").json(&body);
         }
-        let response = request.send().await.context(error::TransportSnafu)?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let (body, body_truncated) = read_error_body(response).await?;
-            return error::HttpSnafu {
-                status,
-                body,
-                body_truncated,
-            }
-            .fail();
-        }
-        Ok(response)
+        ensure_success(request.send().await.context(error::TransportSnafu)?).await
     }
 }
 
@@ -210,72 +180,11 @@ impl ProviderImpl for Anthropic {
             !options.fast || model.overrides.fast != Some(false),
             error::FastModeDisabledSnafu
         );
-        let support = match model.overrides.thinking {
-            Some(ThinkingSupport::No) => false,
-            Some(ThinkingSupport::Yes | ThinkingSupport::Required) => true,
-            None => model.info.features.thinking.supported,
-        };
-        let required = match model.overrides.thinking {
-            Some(ThinkingSupport::Required) => true,
-            Some(_) => false,
-            None => model.info.features.thinking.required,
-        };
         let max_tokens = options
             .max_output_tokens
             .or(model.info.config.max_output_tokens)
             .unwrap_or(self.config.max_output_tokens);
-        let mut effort = None;
-        let thinking = match &options.thinking {
-            ThinkingConfig::Off => {
-                ensure!(!required, error::ReasoningRequiredSnafu);
-                AnthropicThinking::Disabled
-            }
-            ThinkingConfig::Adaptive => {
-                ensure!(
-                    support,
-                    error::ThinkingUnsupportedSnafu { model: &model.id }
-                );
-                AnthropicThinking::Adaptive
-            }
-            ThinkingConfig::Budget(budget) => {
-                ensure!(
-                    support,
-                    error::ThinkingUnsupportedSnafu { model: &model.id }
-                );
-                ensure!(
-                    *budget >= 1024 && *budget < max_tokens,
-                    error::InvalidThinkingBudgetSnafu {
-                        budget: *budget,
-                        max_tokens
-                    }
-                );
-                AnthropicThinking::Enabled {
-                    budget_tokens: *budget,
-                }
-            }
-            ThinkingConfig::Effort(requested) => {
-                ensure!(
-                    support && model.info.features.thinking.efforts.contains(requested),
-                    error::UnsupportedReasoningEffortSnafu {
-                        effort: requested.clone()
-                    }
-                );
-                effort = Some(match requested {
-                    Effort::Low => AnthropicEffort::Low,
-                    Effort::Medium => AnthropicEffort::Medium,
-                    Effort::High => AnthropicEffort::High,
-                    Effort::XHigh => AnthropicEffort::XHigh,
-                    Effort::Max => AnthropicEffort::Max,
-                    Effort::Minimal | Effort::Adaptive => {
-                        return error::UnsupportedReasoningEffortSnafu {
-                            effort: requested.clone(),
-                        }
-                        .fail();
-                    }
-                });
-                AnthropicThinking::Adaptive
-            }
-        };
+        let (thinking, effort) = anthropic_thinking(model, &options.thinking, max_tokens)?;
         let protocol_options = AnthropicOptions::builder()
             .max_tokens(max_tokens)
             .thinking(thinking)
@@ -316,7 +225,9 @@ impl ProviderImpl for Anthropic {
                     false,
                 )
                 .await?;
-            let page: ModelPage = response.json().await.context(error::TransportSnafu)?;
+            let bytes = crate::protocol::body::read_body(response).await?;
+            let page: ModelPage =
+                serde_json::from_slice(&bytes).context(error::DecodeModelsSnafu)?;
             for model in page.data {
                 let mut info = self
                     .config
@@ -379,20 +290,6 @@ impl ProviderImpl for Anthropic {
     }
 
     async fn reload_auth(&self) -> Result<()> {
-        if self.from_env {
-            let key = std::env::var(&self.config.api_key_env).context(
-                error::CredentialEnvironmentSnafu {
-                    variable: &self.config.api_key_env,
-                },
-            )?;
-            ensure!(
-                !key.trim().is_empty(),
-                error::CredentialsSnafu {
-                    variable: &self.config.api_key_env
-                }
-            );
-            *self.key.write().await = key;
-        }
-        Ok(())
+        self.key.reload().await
     }
 }

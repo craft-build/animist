@@ -3200,7 +3200,7 @@ async fn executor_panics_are_reported_while_siblings_finish_and_inference_contin
         ] {
             assert!(report.tool_failures.iter().any(|failure| {
                 failure.call.id == id
-                    && matches!(&*failure.error, ToolError::Panicked { message } if message == expected)
+                    && matches!(&*failure.error, ToolError::Panicked { message, .. } if message == expected)
             }), "missing structured failure for {id}");
             assert!(results.iter().any(|block| matches!(
                 block, ContentBlock::ToolResult { tool_use_id, content, is_error: true, .. }
@@ -3208,7 +3208,7 @@ async fn executor_panics_are_reported_while_siblings_finish_and_inference_contin
             )), "missing model-visible error for {id}");
             assert!(events.iter().any(|event| matches!(
                 event, AgentEvent::ToolFailed { call, error }
-                    if call.id == id && matches!(&**error, ToolError::Panicked { message } if message == expected)
+                    if call.id == id && matches!(&**error, ToolError::Panicked { message, .. } if message == expected)
             )), "missing failure event for {id}");
             assert!(
                 events.iter().any(|event| matches!(

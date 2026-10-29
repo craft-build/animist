@@ -4,22 +4,24 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use flume::Sender;
+use serde::Deserialize;
 use serde_json::Value;
 use snafu::{OptionExt, ResultExt, ensure};
 
 use super::OpenAiOptions;
 use super::error::{
-    ApiSnafu, DecodeEventSnafu, DecodeReasoningSignatureSnafu, DecodeToolArgumentsSnafu,
-    DecodeUsageSnafu, DuplicateOutputIndexSnafu, DuplicateToolItemSnafu, EncodeRequestSnafu,
-    EventReceiverSnafu, InvalidReasoningSignatureSnafu, MissingMessageContentSnafu,
-    MissingOutputIndexSnafu, MissingOutputSnafu, MissingResponsesReasoningItemSnafu,
-    MissingStringFieldSnafu, RefusalSnafu, ResponseFailedSnafu, TruncatedResponsesStreamSnafu,
-    UnknownToolItemSnafu, UnsuccessfulResponseSnafu, UnsupportedContentTypeSnafu,
-    UnsupportedLoadedToolsSnafu, UnsupportedOutputItemSnafu, UnsupportedResponsesContentSnafu,
+    ApiSnafu, DecodeEventSnafu, DecodeOutputItemSnafu, DecodeReasoningSignatureSnafu,
+    DecodeToolArgumentsSnafu, DecodeUsageSnafu, DuplicateOutputIndexSnafu, DuplicateToolItemSnafu,
+    EncodeRequestSnafu, EventReceiverSnafu, InvalidReasoningSignatureSnafu, InvalidToolInputSnafu,
+    MissingMessageContentSnafu, MissingOutputIndexSnafu, MissingOutputSnafu,
+    MissingResponsesReasoningItemSnafu, MissingStringFieldSnafu, RefusalSnafu, ResponseFailedSnafu,
+    TruncatedResponsesStreamSnafu, UnknownToolItemSnafu, UnsuccessfulResponseSnafu,
+    UnsupportedContentTypeSnafu, UnsupportedLoadedToolsSnafu, UnsupportedOutputItemSnafu,
+    UnsupportedResponsesContentSnafu,
 };
 use super::types::{
-    AddedItem, Reasoning, ReasoningSummary, ResponseContent, ResponseInclude, ResponseInput,
-    ResponseOutput, ResponseTool, ResponsesRequest, ServiceTier, StreamEvent, Usage,
+    AddedItem, OutputItem, Reasoning, ReasoningSummary, ResponseContent, ResponseInclude,
+    ResponseInput, ResponseOutput, ResponseTool, ResponsesRequest, ServiceTier, StreamEvent, Usage,
 };
 use crate::{
     history::{ContentBlock, Message, MessageKind, Role, ToolContent},
@@ -55,14 +57,19 @@ impl Protocol for Responses {
                 }
             );
         }
-        crate::protocol::sampling::validate(input.options, "responses", 2.0, 0.0, 0)?;
+        crate::protocol::sampling::validate(input.options, "responses", 2.0, 0)?;
         let mut items = Vec::new();
         for message in input.messages {
             let mut parts = Vec::new();
             for block in &message.content {
                 let item = match block {
                     ContentBlock::Text { text } => {
-                        parts.push(ResponseContent::InputText { text: text.clone() });
+                        let text = text.clone();
+                        parts.push(if message.role == Role::Assistant {
+                            ResponseContent::OutputText { text }
+                        } else {
+                            ResponseContent::InputText { text }
+                        });
                         continue;
                     }
                     ContentBlock::Image { source } if message.role == Role::User => {
@@ -217,8 +224,7 @@ impl Protocol for Responses {
                 .build()
                 .into());
             }
-            let event: StreamEvent =
-                serde_json::from_value(value.clone()).context(DecodeEventSnafu)?;
+            let event = StreamEvent::deserialize(&value).context(DecodeEventSnafu)?;
             #[expect(
                 clippy::match_same_arms,
                 reason = "empty arms keep ignored event kinds explicit"
@@ -280,9 +286,9 @@ impl Protocol for Responses {
                         DuplicateOutputIndexSnafu { index }
                     );
                     let item = item.unwrap_or_default();
-                    let status = &item["status"];
-                    let blocks = if status.is_null() || status == "completed" {
-                        Some(Self::output_blocks(&item)?)
+                    let fields = OutputItem::deserialize(&item).context(DecodeOutputItemSnafu)?;
+                    let blocks = if fields.is_completed() {
+                        Some(Self::output_blocks(&item, fields)?)
                     } else {
                         None
                     };
@@ -305,12 +311,12 @@ impl Protocol for Responses {
                 }
                 StreamEvent::Completed { response } | StreamEvent::Incomplete { response } => {
                     let response = response.unwrap_or_default();
-                    if !response["usage"].is_null() {
-                        let usage = serde_json::from_value::<Usage>(response["usage"].clone())
-                            .context(DecodeUsageSnafu)?
-                            .into();
+                    if let Some(usage) = response.usage.as_ref().filter(|usage| !usage.is_null()) {
+                        let usage = Usage::deserialize(usage).context(DecodeUsageSnafu)?;
                         event_tx
-                            .send_async(ProviderEvent::Usage { usage })
+                            .send_async(ProviderEvent::Usage {
+                                usage: usage.into(),
+                            })
                             .await
                             .context(EventReceiverSnafu)?;
                     }
@@ -318,7 +324,7 @@ impl Protocol for Responses {
                 }
                 StreamEvent::Failed { response } => {
                     let response = response.unwrap_or_default();
-                    if let Ok(usage) = serde_json::from_value::<Usage>(response["usage"].clone()) {
+                    if let Some(Ok(usage)) = response.usage.as_ref().map(Usage::deserialize) {
                         event_tx
                             .send_async(ProviderEvent::Usage {
                                 usage: usage.into(),
@@ -327,7 +333,7 @@ impl Protocol for Responses {
                             .context(EventReceiverSnafu)?;
                     }
                     return Err(ResponseFailedSnafu {
-                        error: response["error"].clone(),
+                        error: response.error.unwrap_or_default(),
                     }
                     .build()
                     .into());
@@ -336,23 +342,20 @@ impl Protocol for Responses {
                 StreamEvent::Unknown => {}
             }
         };
-        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-            return Err(ApiSnafu {
-                error: error.clone(),
-            }
-            .build()
-            .into());
+        if let Some(error) = response.error.filter(|error| !error.is_null()) {
+            return Err(ApiSnafu { error }.build().into());
         }
         let mut blocks = Vec::new();
         let mut checkpoint_prefix = !checkpoint_blocked;
-        for (index, item) in response["output"]
-            .as_array()
+        for (index, item) in response
+            .output
             .context(MissingOutputSnafu)?
             .iter()
             .enumerate()
         {
-            let item_blocks = Self::output_blocks(item)?;
-            checkpoint_prefix &= item["status"].is_null() || item["status"] == "completed";
+            let fields = OutputItem::deserialize(item).context(DecodeOutputItemSnafu)?;
+            checkpoint_prefix &= fields.is_completed();
+            let item_blocks = Self::output_blocks(item, fields)?;
             #[expect(
                 clippy::as_conversions,
                 reason = "usize output index fits u64 wire counters"
@@ -369,7 +372,10 @@ impl Protocol for Responses {
             }
             blocks.extend(item_blocks);
         }
-        let stop = match response["status"].as_str() {
+        let reason = response
+            .incomplete_details
+            .and_then(|details| details.reason);
+        let stop = match response.status.as_deref() {
             Some("completed")
                 if blocks
                     .iter()
@@ -378,26 +384,21 @@ impl Protocol for Responses {
                 StopReason::ToolUse
             }
             Some("completed") => StopReason::EndTurn,
-            Some("incomplete")
-                if response["incomplete_details"]["reason"] == "max_output_tokens" =>
-            {
+            Some("incomplete") if reason.as_deref() == Some("max_output_tokens") => {
                 StopReason::MaxTokens
             }
             _ => {
                 return Err(UnsuccessfulResponseSnafu {
-                    status: response["status"].clone(),
-                    reason: response["incomplete_details"]["reason"].clone(),
+                    status: response.status,
+                    reason,
                 }
                 .build()
                 .into());
             }
         };
-        let usage: TokenUsage = if response["usage"].is_null() {
-            TokenUsage::default()
-        } else {
-            serde_json::from_value::<Usage>(response["usage"].clone())
-                .context(DecodeUsageSnafu)?
-                .into()
+        let usage: TokenUsage = match response.usage.filter(|usage| !usage.is_null()) {
+            Some(usage) => Usage::deserialize(&usage).context(DecodeUsageSnafu)?.into(),
+            None => TokenUsage::default(),
         };
         Ok(StreamResponse::builder()
             .message(
@@ -415,26 +416,25 @@ impl Protocol for Responses {
 }
 
 impl Responses {
-    fn output_blocks(item: &Value) -> Result<Vec<ContentBlock>> {
+    /// Converts one completed item; `raw` is kept verbatim as the reasoning signature.
+    fn output_blocks(raw: &Value, item: OutputItem) -> Result<Vec<ContentBlock>> {
         let mut blocks = Vec::new();
-        match item["type"]
-            .as_str()
+        match item
+            .kind
+            .as_deref()
             .context(MissingStringFieldSnafu { field: "type" })?
         {
             "message" => {
-                for part in item["content"]
-                    .as_array()
-                    .context(MissingMessageContentSnafu)?
-                {
-                    match part["type"]
-                        .as_str()
+                for part in item.content.context(MissingMessageContentSnafu)? {
+                    match part
+                        .kind
+                        .as_deref()
                         .context(MissingStringFieldSnafu { field: "type" })?
                     {
                         "output_text" => blocks.push(ContentBlock::Text {
-                            text: part["text"]
-                                .as_str()
-                                .context(MissingStringFieldSnafu { field: "text" })?
-                                .to_owned(),
+                            text: part
+                                .text
+                                .context(MissingStringFieldSnafu { field: "text" })?,
                         }),
                         "refusal" => return Err(RefusalSnafu.build().into()),
                         kind => {
@@ -444,39 +444,38 @@ impl Responses {
                 }
             }
             "function_call" => {
-                let id = item["call_id"]
-                    .as_str()
+                let id = item
+                    .call_id
                     .context(MissingStringFieldSnafu { field: "call_id" })?;
-                let name = item["name"]
-                    .as_str()
-                    .context(MissingStringFieldSnafu { field: "name" })?
-                    .to_owned();
-                let arguments = item["arguments"]
-                    .as_str()
+                let name = item
+                    .name
+                    .context(MissingStringFieldSnafu { field: "name" })?;
+                let arguments = item
+                    .arguments
                     .context(MissingStringFieldSnafu { field: "arguments" })?;
-                let input =
-                    serde_json::from_str(arguments).context(DecodeToolArgumentsSnafu { id })?;
+                let input = if arguments.is_empty() {
+                    Value::Object(serde_json::Map::new())
+                } else {
+                    serde_json::from_str(&arguments)
+                        .context(DecodeToolArgumentsSnafu { id: &id })?
+                };
+                ensure!(input.is_object(), InvalidToolInputSnafu { id: &id });
                 blocks.push(ContentBlock::ToolUse {
-                    id: id.into(),
+                    id,
                     name,
                     input,
                     thought_signature: None,
                 });
             }
             "reasoning" => {
-                let summary = item["summary"]
-                    .as_array()
-                    .map(|parts| {
-                        parts
-                            .iter()
-                            .filter_map(|part| part["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
                 blocks.push(ContentBlock::Thinking {
-                    thinking: summary,
-                    signature: Some(item.to_string()),
+                    thinking: item
+                        .summary
+                        .into_iter()
+                        .filter_map(|part| part.text)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    signature: Some(raw.to_string()),
                 });
             }
             kind => {

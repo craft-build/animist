@@ -90,7 +90,9 @@ impl Catalog {
             .context(error::FetchSnafu { url })?
             .error_for_status()
             .context(error::FetchSnafu { url })?;
-        let bytes = response.bytes().await.context(error::FetchSnafu { url })?;
+        let bytes = crate::protocol::body::read_body(response)
+            .await
+            .context(error::ReadBodySnafu { url })?;
         Self::from_slice(&bytes)
     }
 

@@ -628,6 +628,47 @@ async fn retry_exhaustion_returns_the_last_response_and_stops_at_the_limit() {
 }
 
 #[tokio::test]
+async fn oversized_throttle_bodies_are_still_retried() {
+    let replies = (0..2)
+        .map(|_| {
+            Reply::builder()
+                .status(429_u16)
+                .body(vec![b'x'; 64 * 1024 + 1])
+                .headers(vec![("retry-after".into(), "0".into())])
+                .build()
+        })
+        .collect();
+    let (url, task) = server(replies).await;
+    let provider = Bedrock::from_sdk_config(
+        BedrockConfig::builder()
+            .endpoint_url(url)
+            .max_attempts(2_u32)
+            .build(),
+        &static_sdk(),
+    )
+    .unwrap();
+    let (tx, _rx) = flume::unbounded();
+    let error = provider
+        .stream_message(
+            &model(),
+            &messages(),
+            "",
+            &[],
+            &tx,
+            RequestOptions::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ProviderError::Bedrock {
+            source: BedrockError::ErrorBodyTooLarge { status: 429, .. }
+        }
+    ));
+    assert_eq!(task.await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn error_response_buffering_is_bounded_and_preserves_the_prefix() {
     let (url, task) = server(vec![
         Reply::builder()

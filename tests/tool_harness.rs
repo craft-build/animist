@@ -97,7 +97,7 @@ async fn erased_executor_panics_return_structured_errors_and_the_harness_remains
     let mut harness = ToolHarness::builder().build().unwrap();
     assert!(matches!(
         harness.call_executor(ToolExecutor::new(PanickingExecutor), Value::Null).await,
-        Err(ToolError::Panicked { message }) if message == "erased executor panic"
+        Err(ToolError::Panicked { message, .. }) if message == "erased executor panic"
     ));
     let output = harness
         .call(Echo, json!({"text": "still usable"}))
@@ -187,7 +187,7 @@ async fn child_panics_are_recorded_at_the_executor_boundary_they_cross() {
             let failures = harness.run().tool_failures().await;
             if layer_panic {
                 assert!(matches!(
-                    result, Err(ToolError::Panicked { message }) if message == "child layer panic"
+                    result, Err(ToolError::Panicked { message, .. }) if message == "child layer panic"
                 ));
                 assert!(failures.is_empty(), "the child executor was never entered");
             } else {
@@ -200,7 +200,7 @@ async fn child_panics_are_recorded_at_the_executor_boundary_they_cross() {
                 assert_eq!(failures.len(), 1);
                 assert_eq!(failures[0].call.id, "child");
                 assert!(matches!(
-                    &*failures[0].error, ToolError::Panicked { message } if message == "erased executor panic"
+                    &*failures[0].error, ToolError::Panicked { message, .. } if message == "erased executor panic"
                 ));
             }
         }

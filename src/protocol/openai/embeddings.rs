@@ -15,7 +15,7 @@ use super::error;
 #[derive(crate::Struct!)]
 pub struct Embeddings;
 
-#[derive(Serialize)]
+#[derive(crate::Struct!, Serialize)]
 struct Request<'a> {
     model: &'a str,
     input: &'a [String],
@@ -23,20 +23,20 @@ struct Request<'a> {
     dimensions: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(crate::Struct!, Deserialize)]
 struct Response {
     model: String,
     data: Vec<Entry>,
     usage: Option<Usage>,
 }
 
-#[derive(Deserialize)]
+#[derive(crate::Struct!, Deserialize)]
 struct Entry {
     index: usize,
     embedding: Vec<f32>,
 }
 
-#[derive(Deserialize)]
+#[derive(crate::Struct!, Deserialize)]
 struct Usage {
     prompt_tokens: u64,
     total_tokens: Option<u64>,
@@ -72,7 +72,9 @@ impl EmbeddingProtocol for Embeddings {
         model: &EmbeddingModel,
         request: &EmbeddingRequest,
     ) -> Result<EmbeddingResponse> {
-        let bytes = response.bytes().await.context(error::ReadEmbeddingsSnafu)?;
+        let bytes = crate::protocol::body::read_body(response)
+            .await
+            .context(error::ReadEmbeddingsSnafu)?;
         let response: Response =
             serde_json::from_slice(&bytes).context(error::DecodeEmbeddingsSnafu)?;
         let mut embeddings = vec![None; request.input.len()];

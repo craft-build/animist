@@ -57,7 +57,9 @@ impl DeciderProtocol for SystemOne {
         response: Self::Response,
         request: &DecisionRequest,
     ) -> Result<DecisionResponse> {
-        let bytes = response.bytes().await.context(error::ReadResponseSnafu)?;
+        let bytes = crate::protocol::body::read_body(response)
+            .await
+            .context(error::ReadResponseSnafu)?;
         let response: Response =
             serde_json::from_slice(&bytes).context(error::DecodeResponseSnafu)?;
         for id in response.answers.keys() {

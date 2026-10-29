@@ -217,6 +217,26 @@ pub struct Model {
     pub overrides: Overrides,
 }
 
+impl Model {
+    /// Whether the model can reason, with overrides taking precedence.
+    pub fn thinking_supported(&self) -> bool {
+        match self.overrides.thinking {
+            Some(ThinkingSupport::No) => false,
+            Some(ThinkingSupport::Yes | ThinkingSupport::Required) => true,
+            None => self.info.features.thinking.supported,
+        }
+    }
+
+    /// Whether every request must reason, with overrides taking precedence.
+    pub fn thinking_required(&self) -> bool {
+        match self.overrides.thinking {
+            Some(ThinkingSupport::Required) => true,
+            Some(_) => false,
+            None => self.info.features.thinking.required,
+        }
+    }
+}
+
 impl std::fmt::Debug for Model {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Model")

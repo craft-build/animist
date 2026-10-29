@@ -10,9 +10,10 @@ use snafu::{OptionExt, ResultExt, ensure};
 use super::error::{
     ApiSnafu, ChatReasoningReplayDisabledSnafu, ChoiceAfterFinishSnafu, DecodeChunkSnafu,
     DecodeEventSnafu, DecodeToolArgumentsSnafu, EncodeRequestSnafu, EventReceiverSnafu,
-    IncompleteToolIdentitySnafu, MissingFinishReasonSnafu, MultipleChoicesSnafu, RefusalSnafu,
-    ToolArgumentsBeforeIdentitySnafu, TruncatedChatStreamSnafu, UnexpectedFinishReasonSnafu,
-    UnsupportedChatContentSnafu, UnsupportedChatToolImageSnafu, UnsupportedLoadedToolsSnafu,
+    IncompleteToolIdentitySnafu, InvalidToolInputSnafu, MissingFinishReasonSnafu,
+    MultipleChoicesSnafu, RefusalSnafu, ToolArgumentsBeforeIdentitySnafu, TruncatedChatStreamSnafu,
+    UnexpectedFinishReasonSnafu, UnsupportedChatContentSnafu, UnsupportedChatToolImageSnafu,
+    UnsupportedLoadedToolsSnafu,
 };
 use super::types::{
     ChatAssistantContent, ChatCall, ChatChunk, ChatContent, ChatMessage, ChatRequest, ChatTool,
@@ -45,7 +46,7 @@ impl Protocol for ChatCompletions {
 
     fn request(&self, input: ProtocolInput<'_>, options: &Self::Options) -> Result<Self::Request> {
         crate::protocol::validate_replay(input.messages, input.tools)?;
-        crate::protocol::sampling::validate(input.options, "chat_completions", 2.0, 0.0, 4)?;
+        crate::protocol::sampling::validate(input.options, "chat_completions", 2.0, 4)?;
         let mut messages = Vec::new();
         if !input.system.is_empty() {
             messages.push(ChatMessage::System {
@@ -278,7 +279,11 @@ impl Protocol for ChatCompletions {
                     }
                 );
                 let delta = choice.delta;
-                if let Some(piece) = delta.reasoning_content.filter(|piece| !piece.is_empty()) {
+                if let Some(piece) = delta
+                    .reasoning_content
+                    .or(delta.reasoning)
+                    .filter(|piece| !piece.is_empty())
+                {
                     reasoning.push_str(&piece);
                     event_tx
                         .send_async(ProviderEvent::ThinkingDelta { text: piece })
@@ -380,8 +385,13 @@ impl Protocol for ChatCompletions {
                     }
                     for (index, call) in std::mem::take(&mut calls) {
                         ensure!(call.started, IncompleteToolIdentitySnafu { index });
-                        let input = serde_json::from_str(&call.arguments)
-                            .context(DecodeToolArgumentsSnafu { id: &call.id })?;
+                        let input = if call.arguments.is_empty() {
+                            Value::Object(serde_json::Map::new())
+                        } else {
+                            serde_json::from_str(&call.arguments)
+                                .context(DecodeToolArgumentsSnafu { id: &call.id })?
+                        };
+                        ensure!(input.is_object(), InvalidToolInputSnafu { id: &call.id });
                         let block = ContentBlock::ToolUse {
                             id: call.id,
                             name: call.name,

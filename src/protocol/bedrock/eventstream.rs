@@ -5,8 +5,10 @@ use snafu::{OptionExt, ResultExt, ensure};
 
 use super::error::{self, EventStreamError};
 
-/// Application-level budget, shared by framing and assembled content.
-const EXCHANGE_LIMIT: usize = 16 * 1024 * 1024;
+/// Largest single frame.
+const FRAME_LIMIT: usize = 16 * 1024 * 1024;
+/// Total wire bytes per exchange; far above any realistic generation.
+const EXCHANGE_LIMIT: usize = 256 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(super) struct Frame {
@@ -70,10 +72,8 @@ impl Frames {
             error::InvalidLengthsSnafu { total, headers }
         );
         ensure!(
-            total <= EXCHANGE_LIMIT,
-            error::ExchangeTooLargeSnafu {
-                limit: EXCHANGE_LIMIT
-            }
+            total <= FRAME_LIMIT,
+            error::FrameTooLargeSnafu { limit: FRAME_LIMIT }
         );
         ensure!(
             self.read_to(total).await?,

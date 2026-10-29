@@ -8,6 +8,11 @@ use crate::{history::Role, provider::ThinkingConfig};
 pub enum EventStreamError {
     #[snafu(display("Failed to read EventStream: {source}"))]
     Read { source: reqwest::Error },
+    #[snafu(display("EventStream frame exceeds {limit} bytes"))]
+    FrameTooLarge {
+        limit: usize,
+        backtrace: snafu::Backtrace,
+    },
     #[snafu(display("EventStream exchange exceeds {limit} bytes"))]
     ExchangeTooLarge {
         limit: usize,

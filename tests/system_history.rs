@@ -90,7 +90,7 @@ fn openai_preserves_exact_instruction_order_and_roles() {
             {"type": "message", "role": "system", "content": [
                 {"type": "input_text", "text": "lore"}, {"type": "input_text", "text": "steer"}
             ]},
-            {"type": "message", "role": "assistant", "content": [{"type": "input_text", "text": "reply"}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "reply"}]},
             {"type": "message", "role": "system", "content": [{"type": "input_text", "text": "last instruction"}]},
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "last"}]}
         ])

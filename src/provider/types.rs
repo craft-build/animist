@@ -20,12 +20,6 @@ pub enum ProviderEvent {
     ToolUseStart { id: String, name: String },
     /// Partial JSON for the tool input identified by `id`.
     ToolInputDelta { id: String, partial_json: String },
-    /// Prompt ingestion in tokens: processed and total so far, cache hits.
-    PromptProgress {
-        processed: u32,
-        total: u32,
-        cache: u32,
-    },
 }
 
 /// Requested reasoning mode for an attempt.

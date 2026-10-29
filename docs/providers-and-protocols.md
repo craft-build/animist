@@ -369,8 +369,10 @@ choosing to persist them must explicitly close tool calls with truthful results,
 preserve opaque dependencies, and validate the resulting request. No partial
 content is automatically executed or committed by the agent.
 
-Each built-in SSE exchange accepts at most 16 MiB of total wire bytes, in
-addition to the existing event/framing limits. The exchange retains at most
+Each built-in SSE exchange accepts at most 256 MiB of total wire bytes, in
+addition to the 16 MiB event and unread-buffer limits. The total is kept
+separate so verbose framing on long generations cannot exhaust the
+per-event budget. The exchange retains at most
 16 MiB across display strings and serialized closed blocks; if the budget is
 exceeded, `retention_limited` is set and no later blocks are retained across the
 gap. Usage remains available. Channels apply backpressure; retained output is
@@ -378,8 +380,8 @@ not an unbounded event log. A checkpoint is observable only after the producer
 enqueues it; cancellation cannot recover unreported wire state or server usage.
 Errors retain their concrete protocol/provider variants and upstream payloads
 in `ExchangeEvent::Finished`, independently of the partial output.
-Converse applies the same 16 MiB total-wire budget to AWS EventStream framing
-and validates both CRC32 checksums, length fields, and header structure.
+Converse applies the same 256 MiB total-wire and 16 MiB per-frame budgets to
+AWS EventStream framing and validates both CRC32 checksums, length fields, and header structure.
 
 This adds provider event variants and changes `ProviderEvent` equality from
 `Eq` to `PartialEq` because usage includes an optional floating-point cost.

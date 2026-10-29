@@ -6,7 +6,7 @@ use bon::Builder;
 use futures_util::FutureExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use snafu::{IntoError, ResultExt, Snafu};
+use snafu::{ResultExt, Snafu};
 
 use super::{Agent, Result, RunContext};
 use crate::Struct;
@@ -72,8 +72,12 @@ pub enum ToolError {
     Output {
         source: Box<dyn Error + Send + Sync>,
     },
+    /// Unwinding panics only; under `panic = "abort"` the process exits instead.
     #[snafu(display("Tool execution panicked: {message}"))]
-    Panicked { message: String },
+    Panicked {
+        message: String,
+        backtrace: snafu::Backtrace,
+    },
 }
 
 /// One admitted model tool call with its decoded JSON arguments.
@@ -158,6 +162,7 @@ pub trait ToolExecutor {
 }
 
 impl ToolExecutor {
+    /// Isolates user executor panics at the tool boundary as `Panicked` failures.
     pub(crate) async fn execute_catching_panics(
         &self,
         context: &ToolContext<'_>,
@@ -174,7 +179,7 @@ impl ToolExecutor {
                 } else {
                     "non-string panic payload".to_owned()
                 };
-                Err(ToolError::Panicked { message })
+                PanickedSnafu { message }.fail()
             })
     }
 }
@@ -200,7 +205,8 @@ impl<T: ToolImpl> ToolExecutorImpl for TypedTool<T> {
         self.0
             .call(context, args)
             .await
-            .map_err(|source| ExecutionSnafu.into_error(Box::new(source)))?
+            .boxed()
+            .context(ExecutionSnafu)?
             .into_tool_output()
     }
 }
@@ -240,7 +246,7 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Frozen declarations advertised to inference, in registration order.
+    /// Frozen declarations advertised to inference, sorted by tool name.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.tools.values().map(|(d, _)| d.clone()).collect()
     }

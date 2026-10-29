@@ -168,6 +168,60 @@ impl Agent {
         options: crate::provider::RequestOptions,
         run: &RunContext,
     ) -> Result<RunReport> {
+        self.admit_input(input, run).await?;
+        let system = self.prompt.to_markdown();
+        let mut last_response = None;
+        let mut retries = 0;
+        for step in 0..self.config.max_steps {
+            let (response, expected, visible) = self
+                .infer_step(run, step, &system, &options, &mut retries)
+                .await?;
+            let calls = Self::tool_calls(&expected, &response)?;
+            let (stored, failure) = self
+                .run_step_tools(run, &expected, &response, &calls, &visible)
+                .await?;
+            run.emit(AgentEvent::StepFinished {
+                message: response.message.clone(),
+                usage: response.usage,
+                stop_reason: response.stop_reason.clone(),
+            })
+            .await;
+            last_response = Some(stored);
+            if let Some(error) = failure {
+                return Err(error);
+            }
+            if let Some(status) = self
+                .finish_step(
+                    run,
+                    step,
+                    response.message,
+                    response.stop_reason,
+                    !calls.is_empty(),
+                )
+                .await?
+            {
+                return Ok(RunReport {
+                    id: run.id,
+                    status,
+                    response: last_response,
+                    stats: run.stats.snapshot().await,
+                    tool_failures: run.tool_failures().await,
+                    interrupted_attempts: run.interrupted_attempts().await,
+                });
+            }
+        }
+        Ok(RunReport {
+            id: run.id,
+            status: RunStatus::StepLimit,
+            response: last_response,
+            stats: run.stats.snapshot().await,
+            tool_failures: run.tool_failures().await,
+            interrupted_attempts: run.interrupted_attempts().await,
+        })
+    }
+
+    /// Starts layers once, then validates and records the user input.
+    async fn admit_input(&self, input: StoredMessage, run: &RunContext) -> Result<()> {
         if run.cancellation.is_cancelled() {
             return Err(error::CancelledSnafu.build());
         }
@@ -207,306 +261,311 @@ impl Agent {
         }
         crate::protocol::validate_replay(std::slice::from_ref(input.message()), &[])?;
         self.history.add_stored(input).await;
-        let system = self.prompt.to_markdown();
-        let mut last_response = None;
-        let mut retries = 0;
-        for step in 0..self.config.max_steps {
-            let (response, expected, visible) = loop {
-                let messages = self.history.current().await;
-                let definitions = self.tools.definitions();
-                crate::protocol::validate_replay(&messages, &definitions)?;
-                let request = StepRequest::builder()
-                    .model(self.model.clone())
-                    .messages(messages)
-                    .system(system.clone())
-                    .tools(definitions.clone())
-                    .options(options.clone())
-                    .build();
-                let request = match &self.layers {
-                    Some(layers) => {
-                        run.cancellation
-                            .race(layers.prepare_request(self, run, request))
-                            .await?
-                    }
-                    None => request,
-                };
-                crate::protocol::validate_replay(&request.messages, &request.tools)?;
-                validate_tool_subset(&request.tools, &definitions)?;
-                let expected = self.history.snapshot().await;
-                match self.stream(run, step.into(), &request).await {
-                    Ok(response) => break (response, expected, request.tools),
-                    Err(error @ AgentError::Inference { .. })
-                        if retries < self.config.max_retries =>
-                    {
-                        let recovery = match &self.layers {
-                            Some(layers) => {
-                                run.cancellation
-                                    .race(layers.recover(self, run, &error))
-                                    .await?
-                            }
-                            None => Recovery::Propagate,
-                        };
-                        if recovery == Recovery::Propagate {
-                            return Err(error);
-                        }
-                        retries += 1;
-                        run.emit(AgentEvent::Retrying {
-                            attempt: run.stats.attempts.load(Ordering::Relaxed),
-                        })
-                        .await;
-                    }
-                    Err(error) => return Err(error),
-                }
-            };
-            let response = match &self.layers {
+        Ok(())
+    }
+
+    /// Requests one inference step, retrying recoverable failures, and
+    /// returns the response with the history it was based on and visible tools.
+    async fn infer_step(
+        &self,
+        run: &RunContext,
+        step: u32,
+        system: &str,
+        options: &crate::provider::RequestOptions,
+        retries: &mut u32,
+    ) -> Result<(StreamResponse, HistorySnapshot, Vec<crate::provider::Tool>)> {
+        let (response, expected, visible) = loop {
+            let messages = self.history.current().await;
+            let definitions = self.tools.definitions();
+            crate::protocol::validate_replay(&messages, &definitions)?;
+            let request = StepRequest::builder()
+                .model(self.model.clone())
+                .messages(messages)
+                .system(system)
+                .tools(definitions.clone())
+                .options(options.clone())
+                .build();
+            let request = match &self.layers {
                 Some(layers) => {
                     run.cancellation
-                        .race(layers.response(self, run, response))
+                        .race(layers.prepare_request(self, run, request))
                         .await?
                 }
-                None => response,
+                None => request,
             };
-            if response.message.role != Role::Assistant {
-                return Err(error::InvalidRoleSnafu {
-                    expected: Role::Assistant,
-                    actual: response.message.role,
+            crate::protocol::validate_replay(&request.messages, &request.tools)?;
+            validate_tool_subset(&request.tools, &definitions)?;
+            let expected = self.history.snapshot().await;
+            match self.stream(run, step.into(), &request).await {
+                Ok(response) => break (response, expected, request.tools),
+                Err(error @ AgentError::Inference { .. }) if *retries < self.config.max_retries => {
+                    let recovery = match &self.layers {
+                        Some(layers) => {
+                            run.cancellation
+                                .race(layers.recover(self, run, &error))
+                                .await?
+                        }
+                        None => Recovery::Propagate,
+                    };
+                    if recovery == Recovery::Propagate {
+                        return Err(error);
+                    }
+                    *retries += 1;
+                    run.emit(AgentEvent::Retrying {
+                        attempt: run.stats.attempts.load(Ordering::Relaxed),
+                    })
+                    .await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let response = match &self.layers {
+            Some(layers) => {
+                run.cancellation
+                    .race(layers.response(self, run, response))
+                    .await?
+            }
+            None => response,
+        };
+        if response.message.role != Role::Assistant {
+            return Err(error::InvalidRoleSnafu {
+                expected: Role::Assistant,
+                actual: response.message.role,
+            }
+            .build());
+        }
+        Ok((response, expected, visible))
+    }
+
+    /// Admits the response's tool calls, rejecting reused or empty IDs.
+    fn tool_calls(expected: &HistorySnapshot, response: &StreamResponse) -> Result<Vec<ToolCall>> {
+        let mut ids: BTreeSet<_> = expected
+            .entries()
+            .iter()
+            .filter_map(HistoryEntry::current)
+            .flat_map(|stored| &stored.message().content)
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut calls = Vec::new();
+        for block in &response.message.content {
+            if matches!(block, ContentBlock::ToolResult { .. }) {
+                return Err(error::AssistantToolResultSnafu.build());
+            }
+            if let ContentBlock::ToolUse {
+                id, name, input, ..
+            } = block
+            {
+                if id.is_empty() || !ids.insert(id.clone()) {
+                    return Err(error::InvalidToolCallIdSnafu { id: id.clone() }.build());
+                }
+                calls.push(
+                    ToolCall::builder()
+                        .id(id)
+                        .name(name)
+                        .input(input.clone())
+                        .build(),
+                );
+            }
+        }
+        if calls.is_empty() && response.stop_reason == Some(StopReason::ToolUse) {
+            return Err(error::MissingToolCallsSnafu.build());
+        }
+        Ok(calls)
+    }
+
+    /// Commits the response with placeholder results, executes its calls in
+    /// bounded waves, and returns the stored response and first fatal failure.
+    async fn run_step_tools(
+        &self,
+        run: &RunContext,
+        expected: &HistorySnapshot,
+        response: &StreamResponse,
+        calls: &[ToolCall],
+        visible: &[crate::provider::Tool],
+    ) -> Result<(StoredMessage, Option<AgentError>)> {
+        let stored = StoredMessage::builder()
+            .timestamp(jiff::Timestamp::now())
+            .message(response.message.clone())
+            .build();
+        let mut results: Vec<_> = calls.iter().map(|call| ContentBlock::ToolResult {
+            tool_use_id: call.id.clone(),
+            name: Some(call.name.clone()),
+            content: "Tool execution interrupted or not completed; external effects may have occurred".into(),
+            is_error: true,
+            loaded_tools: Vec::new(),
+        }).collect();
+        let mut result_message = StoredMessage::builder()
+            .timestamp(jiff::Timestamp::now())
+            .message(
+                Message::builder()
+                    .role(Role::User)
+                    .content(results.clone())
+                    .kind(crate::history::MessageKind::Turn)
+                    .build(),
+            )
+            .build();
+        let result_index = expected.entries().len() + 1;
+        let mut edits = vec![CompactionEdit::Insert {
+            before: expected.entries().len(),
+            message: stored.clone(),
+        }];
+        if !calls.is_empty() {
+            edits.push(CompactionEdit::Insert {
+                before: expected.entries().len(),
+                message: result_message.clone(),
+            });
+        }
+        self.history
+            .compact(ExchangeCommit {
+                expected: expected.entries().to_vec(),
+                edits,
+            })
+            .await?;
+        let mut failure = None;
+        let mut cursor = 0;
+        let mut result_entry = HistoryEntry::builder()
+            .source(result_message.clone())
+            .build();
+        while cursor < calls.len() {
+            let mut expected = self.history.snapshot().await.entries().to_vec();
+            if expected.get(result_index) != Some(&result_entry) {
+                return Err(error::HistoryChangedSnafu {
+                    messages: vec![result_message],
                 }
                 .build());
             }
-            let mut ids: BTreeSet<_> = expected
-                .entries()
+            let start = cursor;
+            let claims = self.wave_claims(calls, cursor);
+            cursor += claims.len();
+            let skipped = failure.is_some();
+            let mut running: FuturesUnordered<_> = calls[start..cursor]
                 .iter()
-                .filter_map(HistoryEntry::current)
-                .flat_map(|stored| &stored.message().content)
-                .filter_map(|block| match block {
-                    ContentBlock::ToolUse { id, .. } => Some(id.clone()),
-                    _ => None,
+                .zip(claims)
+                .enumerate()
+                .map(|(offset, (call, claim))| {
+                    let stop_reason = &response.stop_reason;
+                    async move {
+                        let output = if skipped {
+                            Ok(ToolOutput::builder()
+                                .content("Not executed because the run stopped")
+                                .is_error(true)
+                                .build())
+                        } else if matches!(
+                            stop_reason,
+                            Some(
+                                StopReason::MaxTokens
+                                    | StopReason::PauseTurn
+                                    | StopReason::Refusal
+                                    | StopReason::ContextWindowExceeded
+                            )
+                        ) {
+                            Ok(ToolOutput::builder()
+                                .content("Not executed because generation did not finish")
+                                .is_error(true)
+                                .build())
+                        } else {
+                            self.execute_tool(run, call, None, 0, visible, claim).await
+                        };
+                        (start + offset, output)
+                    }
                 })
                 .collect();
-            let mut calls = Vec::new();
-            for block in &response.message.content {
-                if matches!(block, ContentBlock::ToolResult { .. }) {
-                    return Err(error::AssistantToolResultSnafu.build());
-                }
-                if let ContentBlock::ToolUse {
-                    id, name, input, ..
-                } = block
-                {
-                    if id.is_empty() || !ids.insert(id.clone()) {
-                        return Err(error::InvalidToolCallIdSnafu { id: id.clone() }.build());
-                    }
-                    calls.push(
-                        ToolCall::builder()
-                            .id(id)
-                            .name(name)
-                            .input(input.clone())
-                            .build(),
-                    );
-                }
-            }
-            if calls.is_empty() && response.stop_reason == Some(StopReason::ToolUse) {
-                return Err(error::MissingToolCallsSnafu.build());
-            }
-            let stored = StoredMessage::builder()
-                .timestamp(jiff::Timestamp::now())
-                .message(response.message.clone())
-                .build();
-            let mut results: Vec<_> = calls.iter().map(|call| ContentBlock::ToolResult {
-                tool_use_id: call.id.clone(),
-                name: Some(call.name.clone()),
-                content: "Tool execution interrupted or not completed; external effects may have occurred".into(),
-                is_error: true,
-                loaded_tools: Vec::new(),
-            }).collect();
-            let mut result_message = StoredMessage::builder()
-                .timestamp(jiff::Timestamp::now())
-                .message(
-                    Message::builder()
-                        .role(Role::User)
-                        .content(results.clone())
-                        .kind(crate::history::MessageKind::Turn)
-                        .build(),
-                )
-                .build();
-            let result_index = expected.entries().len() + 1;
-            let mut edits = vec![CompactionEdit::Insert {
-                before: expected.entries().len(),
-                message: stored.clone(),
-            }];
-            if !calls.is_empty() {
-                edits.push(CompactionEdit::Insert {
-                    before: expected.entries().len(),
-                    message: result_message.clone(),
-                });
-            }
-            self.history
-                .compact(ExchangeCommit {
-                    expected: expected.entries().to_vec(),
-                    edits,
-                })
-                .await?;
-            let mut failure = None;
-            let mut cursor = 0;
-            let mut result_entry = HistoryEntry::builder()
-                .source(result_message.clone())
-                .build();
-            while cursor < calls.len() {
-                let mut expected = self.history.snapshot().await.entries().to_vec();
-                if expected.get(result_index) != Some(&result_entry) {
-                    return Err(error::HistoryChangedSnafu {
-                        messages: vec![result_message],
-                    }
-                    .build());
-                }
-                let start = cursor;
-                let claims = self.wave_claims(&calls, cursor);
-                cursor += claims.len();
-                let skipped = failure.is_some();
-                let mut running: FuturesUnordered<_> = calls[start..cursor]
-                    .iter()
-                    .zip(claims)
-                    .enumerate()
-                    .map(|(offset, (call, claim))| {
-                        let visible = &visible;
-                        let stop_reason = &response.stop_reason;
-                        async move {
-                            let output = if skipped {
-                                Ok(ToolOutput::builder()
-                                    .content("Not executed because the run stopped")
-                                    .is_error(true)
-                                    .build())
-                            } else if matches!(
-                                stop_reason,
-                                Some(
-                                    StopReason::MaxTokens
-                                        | StopReason::PauseTurn
-                                        | StopReason::Refusal
-                                        | StopReason::ContextWindowExceeded
-                                )
-                            ) {
-                                Ok(ToolOutput::builder()
-                                    .content("Not executed because generation did not finish")
-                                    .is_error(true)
-                                    .build())
-                            } else {
-                                self.execute_tool(run, call, None, 0, visible, claim).await
-                            };
-                            (start + offset, output)
+            while let Some((index, output)) = running.next().await {
+                let call = &calls[index];
+                let output = match output {
+                    Ok(output) => output,
+                    Err(error) => {
+                        let output = ToolOutput::builder()
+                            .content(error.to_string())
+                            .is_error(true)
+                            .build();
+                        if failure.is_none() {
+                            failure = Some(error);
+                            run.tool_halt.cancel();
                         }
-                    })
-                    .collect();
-                while let Some((index, output)) = running.next().await {
-                    let call = &calls[index];
-                    let output = match output {
-                        Ok(output) => output,
-                        Err(error) => {
-                            let output = ToolOutput::builder()
-                                .content(error.to_string())
-                                .is_error(true)
-                                .build();
-                            if failure.is_none() {
-                                failure = Some(error);
-                                run.tool_halt.cancel();
-                            }
-                            output
-                        }
-                    };
-                    results[index] = ContentBlock::ToolResult {
-                        tool_use_id: call.id.clone(),
-                        name: Some(call.name.clone()),
-                        content: output.content,
-                        is_error: output.is_error,
-                        loaded_tools: output.loaded_tools,
-                    };
-                    result_message.message_mut().content.clone_from(&results);
-                    self.history
-                        .compact(ExchangeCommit {
-                            expected: expected.clone(),
-                            edits: vec![CompactionEdit::Replace {
-                                index: result_index,
-                                message: result_message.clone(),
-                            }],
-                        })
-                        .await?;
-                    let entry = &expected[result_index];
-                    let mut revisions = entry.revisions().to_vec();
-                    revisions.push(result_message.clone());
-                    expected[result_index] = HistoryEntry::builder()
-                        .source(entry.verbatim().clone())
-                        .revisions(revisions)
-                        .build();
-                    result_entry.clone_from(&expected[result_index]);
-                }
-            }
-            if !calls.is_empty() {
+                        output
+                    }
+                };
+                results[index] = ContentBlock::ToolResult {
+                    tool_use_id: call.id.clone(),
+                    name: Some(call.name.clone()),
+                    content: output.content,
+                    is_error: output.is_error,
+                    loaded_tools: output.loaded_tools,
+                };
+                result_message.message_mut().content.clone_from(&results);
                 self.history
-                    .squash_tool_result(result_index, &result_entry)
+                    .compact(ExchangeCommit {
+                        expected: expected.clone(),
+                        edits: vec![CompactionEdit::Replace {
+                            index: result_index,
+                            message: result_message.clone(),
+                        }],
+                    })
                     .await?;
-            }
-            run.emit(AgentEvent::StepFinished {
-                message: response.message.clone(),
-                usage: response.usage,
-                stop_reason: response.stop_reason.clone(),
-            })
-            .await;
-            last_response = Some(stored);
-            if let Some(error) = failure {
-                return Err(error);
-            }
-            let terminal = match response.stop_reason.clone() {
-                Some(StopReason::MaxTokens) => Some(RunStatus::MaxTokens),
-                Some(StopReason::PauseTurn) => Some(RunStatus::Paused),
-                Some(StopReason::Refusal) => Some(RunStatus::Refused),
-                Some(StopReason::ContextWindowExceeded) => Some(RunStatus::ContextWindowExceeded),
-                _ if calls.is_empty() => Some(RunStatus::Completed),
-                _ => None,
-            };
-            let boundary = self.history.snapshot().await;
-            let outcome = StepOutcome {
-                step: step.into(),
-                response: response.message,
-                stop_reason: response.stop_reason,
-                terminal,
-            };
-            let action = match &self.layers {
-                Some(layers) => {
-                    run.cancellation
-                        .race(layers.step_end(self, run, &outcome))
-                        .await?
-                }
-                None => StepAction::default(),
-            };
-            if action.continue_run
-                && let Some(status @ (RunStatus::Refused | RunStatus::ContextWindowExceeded)) =
-                    terminal
-            {
-                return Err(error::UnsupportedContinuationSnafu { status }.build());
-            }
-            if !action.messages.is_empty() {
-                self.append_step_messages(run, step.into(), &boundary, action.messages)
-                    .await?;
-            }
-            if !action.continue_run
-                && let Some(status) = terminal
-            {
-                return Ok(RunReport {
-                    id: run.id,
-                    status,
-                    response: last_response,
-                    stats: run.stats.snapshot().await,
-                    tool_failures: run.tool_failures().await,
-                    interrupted_attempts: run.interrupted_attempts().await,
-                });
+                let entry = &expected[result_index];
+                let mut revisions = entry.revisions().to_vec();
+                revisions.push(result_message.clone());
+                expected[result_index] = HistoryEntry::builder()
+                    .source(entry.verbatim().clone())
+                    .revisions(revisions)
+                    .build();
+                result_entry.clone_from(&expected[result_index]);
             }
         }
-        Ok(RunReport {
-            id: run.id,
-            status: RunStatus::StepLimit,
-            response: last_response,
-            stats: run.stats.snapshot().await,
-            tool_failures: run.tool_failures().await,
-            interrupted_attempts: run.interrupted_attempts().await,
-        })
+        if !calls.is_empty() {
+            self.history
+                .squash_tool_result(result_index, &result_entry)
+                .await?;
+        }
+        Ok((stored, failure))
+    }
+
+    /// Runs step-end layers and returns the status that ends the run, if any.
+    async fn finish_step(
+        &self,
+        run: &RunContext,
+        step: u32,
+        message: Message,
+        stop_reason: Option<StopReason>,
+        has_calls: bool,
+    ) -> Result<Option<RunStatus>> {
+        let terminal = match &stop_reason {
+            Some(StopReason::MaxTokens) => Some(RunStatus::MaxTokens),
+            Some(StopReason::PauseTurn) => Some(RunStatus::Paused),
+            Some(StopReason::Refusal) => Some(RunStatus::Refused),
+            Some(StopReason::ContextWindowExceeded) => Some(RunStatus::ContextWindowExceeded),
+            _ if !has_calls => Some(RunStatus::Completed),
+            _ => None,
+        };
+        let boundary = self.history.snapshot().await;
+        let outcome = StepOutcome {
+            step: step.into(),
+            response: message,
+            stop_reason,
+            terminal,
+        };
+        let action = match &self.layers {
+            Some(layers) => {
+                run.cancellation
+                    .race(layers.step_end(self, run, &outcome))
+                    .await?
+            }
+            None => StepAction::default(),
+        };
+        if action.continue_run
+            && let Some(status @ (RunStatus::Refused | RunStatus::ContextWindowExceeded)) = terminal
+        {
+            return Err(error::UnsupportedContinuationSnafu { status }.build());
+        }
+        if !action.messages.is_empty() {
+            self.append_step_messages(run, step.into(), &boundary, action.messages)
+                .await?;
+        }
+        Ok(terminal.filter(|_| !action.continue_run))
     }
 
     /// Validates and atomically appends step-boundary messages against the

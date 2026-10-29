@@ -3,14 +3,15 @@
 use async_trait::async_trait;
 use bon::Builder;
 use flume::Sender;
-use reqwest::header::{AUTHORIZATION, HeaderValue};
+use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, ensure};
-use tokio::sync::RwLock;
 
+use super::credential::ApiKey;
+use super::http::ensure_success;
 use super::{
     Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
-    StreamResponse, ThinkingConfig, ThinkingSupport, Tool, error, read_error_body,
+    StreamResponse, ThinkingConfig, Tool, error,
 };
 use crate::protocol::{
     Protocol, ProtocolInput,
@@ -58,38 +59,17 @@ impl Default for ZaiCodingPlanConfig {
 pub struct ZaiCodingPlan {
     config: ZaiCodingPlanConfig,
     client: reqwest::Client,
-    auth: RwLock<HeaderValue>,
-    from_env: bool,
+    key: ApiKey,
 }
 
 impl ZaiCodingPlan {
     /// Validates credentials and binds the provider to its settings.
     pub fn new(mut config: ZaiCodingPlanConfig) -> Result<Self> {
-        let from_env = config.api_key.is_none();
-        let key = if let Some(key) = config.api_key.take() {
-            ensure!(!key.trim().is_empty(), error::EmptyApiKeySnafu);
-            key
-        } else {
-            let key =
-                std::env::var(&config.api_key_env).context(error::CredentialEnvironmentSnafu {
-                    variable: &config.api_key_env,
-                })?;
-            ensure!(
-                !key.trim().is_empty(),
-                error::CredentialsSnafu {
-                    variable: &config.api_key_env
-                }
-            );
-            key
-        };
-        let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
-            .context(error::CredentialHeaderSnafu)?;
-        auth.set_sensitive(true);
+        let key = ApiKey::new(config.api_key.take(), &config.api_key_env, "Bearer ")?;
         Ok(Self {
             config,
             client: reqwest::Client::new(),
-            auth: RwLock::new(auth),
-            from_env,
+            key,
         })
     }
 
@@ -169,12 +149,8 @@ impl ProviderImpl for ZaiCodingPlan {
             );
         }
         let thinking = &model.info.features.thinking;
-        let (supported, required) = match model.overrides.thinking {
-            Some(ThinkingSupport::No) => (false, false),
-            Some(ThinkingSupport::Yes) => (true, false),
-            Some(ThinkingSupport::Required) => (true, true),
-            None => (thinking.supported, thinking.required),
-        };
+        let supported = model.thinking_supported();
+        let required = model.thinking_required();
         let (mode, effort) = match &options.thinking {
             ThinkingConfig::Off if required => return error::ReasoningRequiredSnafu.fail(),
             ThinkingConfig::Off => (ChatThinkingMode::Disabled, None),
@@ -227,22 +203,13 @@ impl ProviderImpl for ZaiCodingPlan {
                 "{}/chat/completions",
                 self.config.base_url.trim_end_matches('/')
             ))
-            .header(AUTHORIZATION, self.auth.read().await.clone())
+            .header(AUTHORIZATION, self.key.header().await)
             .header("Accept", "text/event-stream")
             .json(&body)
             .send()
             .await
             .context(error::TransportSnafu)?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let (body, body_truncated) = read_error_body(response).await?;
-            return error::HttpSnafu {
-                status,
-                body,
-                body_truncated,
-            }
-            .fail();
-        }
+        let response = ensure_success(response).await?;
         Ok(ChatCompletions.assemble(response, event_tx).await?)
     }
 
@@ -265,23 +232,6 @@ impl ProviderImpl for ZaiCodingPlan {
     }
 
     async fn reload_auth(&self) -> Result<()> {
-        if self.from_env {
-            let key = std::env::var(&self.config.api_key_env).context(
-                error::CredentialEnvironmentSnafu {
-                    variable: &self.config.api_key_env,
-                },
-            )?;
-            ensure!(
-                !key.trim().is_empty(),
-                error::CredentialsSnafu {
-                    variable: &self.config.api_key_env
-                }
-            );
-            let mut auth = HeaderValue::from_str(&format!("Bearer {key}"))
-                .context(error::CredentialHeaderSnafu)?;
-            auth.set_sensitive(true);
-            *self.auth.write().await = auth;
-        }
-        Ok(())
+        self.key.reload().await
     }
 }

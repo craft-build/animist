@@ -194,6 +194,7 @@ pub(super) enum ResponseOutput {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum ResponseContent {
     InputText { text: String },
+    OutputText { text: String },
     InputImage { image_url: String },
 }
 
@@ -239,8 +240,8 @@ pub(super) struct Choice {
 #[derive(crate::Struct!, Deserialize)]
 pub(super) struct Delta {
     pub content: Option<String>,
-    #[serde(alias = "reasoning")]
     pub reasoning_content: Option<String>,
+    pub reasoning: Option<String>,
     pub refusal: Option<String>,
     pub tool_calls: Option<Vec<ToolDelta>>,
 }
@@ -261,12 +262,12 @@ pub(super) struct FunctionDelta {
 #[derive(crate::Struct!, Deserialize)]
 #[serde(default)]
 pub(super) struct Usage {
-    #[serde(alias = "prompt_tokens")]
-    pub input_tokens: u32,
-    #[serde(alias = "completion_tokens")]
-    pub output_tokens: u32,
-    #[serde(alias = "prompt_tokens_details")]
+    pub input_tokens: Option<u32>,
+    pub prompt_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
     pub input_tokens_details: Option<InputTokenDetails>,
+    pub prompt_tokens_details: Option<InputTokenDetails>,
 }
 
 #[derive(crate::Struct!, Deserialize)]
@@ -277,10 +278,22 @@ pub(super) struct InputTokenDetails {
 
 impl From<Usage> for TokenUsage {
     fn from(usage: Usage) -> Self {
-        let cached = usage.input_tokens_details.unwrap_or_default().cached_tokens;
+        let cached = usage
+            .input_tokens_details
+            .or(usage.prompt_tokens_details)
+            .unwrap_or_default()
+            .cached_tokens;
+        let input = usage
+            .input_tokens
+            .or(usage.prompt_tokens)
+            .unwrap_or_default();
+        let output = usage
+            .output_tokens
+            .or(usage.completion_tokens)
+            .unwrap_or_default();
         Self::builder()
-            .input(usage.input_tokens.saturating_sub(cached))
-            .output(usage.output_tokens)
+            .input(input.saturating_sub(cached))
+            .output(output)
             .cache_creation(0_u32)
             .cache_read(cached)
             .build()
@@ -307,11 +320,11 @@ pub(super) enum StreamEvent {
         item: Option<Value>,
     },
     #[serde(rename = "response.completed")]
-    Completed { response: Option<Value> },
+    Completed { response: Option<ResponseBody> },
     #[serde(rename = "response.incomplete")]
-    Incomplete { response: Option<Value> },
+    Incomplete { response: Option<ResponseBody> },
     #[serde(rename = "response.failed")]
-    Failed { response: Option<Value> },
+    Failed { response: Option<ResponseBody> },
     #[serde(rename = "error")]
     Error,
     #[serde(other)]
@@ -329,4 +342,59 @@ pub(super) enum AddedItem {
     },
     #[serde(other)]
     Other,
+}
+
+/// Terminal Responses object. Items stay raw so reasoning replays verbatim;
+/// usage stays raw so malformed usage cannot mask a failure.
+#[derive(crate::Struct!, PartialEq, Deserialize)]
+#[serde(default)]
+pub(super) struct ResponseBody {
+    pub status: Option<String>,
+    pub output: Option<Vec<Value>>,
+    pub usage: Option<Value>,
+    pub error: Option<Value>,
+    pub incomplete_details: Option<IncompleteDetails>,
+}
+
+#[derive(crate::Struct!, PartialEq, Deserialize)]
+#[serde(default)]
+pub(super) struct IncompleteDetails {
+    pub reason: Option<String>,
+}
+
+/// Known fields of one Responses output item, validated per item type.
+#[derive(crate::Struct!, Deserialize)]
+#[serde(default)]
+pub(super) struct OutputItem {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub status: Option<String>,
+    pub content: Option<Vec<OutputContent>>,
+    pub call_id: Option<String>,
+    pub name: Option<String>,
+    pub arguments: Option<String>,
+    pub summary: Vec<SummaryPart>,
+}
+
+impl OutputItem {
+    /// Items without a status are treated as complete.
+    pub(super) fn is_completed(&self) -> bool {
+        self.status
+            .as_deref()
+            .is_none_or(|status| status == "completed")
+    }
+}
+
+#[derive(crate::Struct!, Deserialize)]
+#[serde(default)]
+pub(super) struct OutputContent {
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub text: Option<String>,
+}
+
+#[derive(crate::Struct!, Deserialize)]
+#[serde(default)]
+pub(super) struct SummaryPart {
+    pub text: Option<String>,
 }

@@ -20,7 +20,7 @@ pub enum OpenAIProtocolError {
         backtrace: snafu::Backtrace,
     },
     #[snafu(display("Failed to read embeddings response: {source}"))]
-    ReadEmbeddings { source: reqwest::Error },
+    ReadEmbeddings { source: crate::protocol::BodyError },
     #[snafu(display("Invalid embeddings response: {source}"))]
     DecodeEmbeddings { source: serde_json::Error },
     #[snafu(display("Embedding index {index} is outside input count {count}"))]
@@ -57,6 +57,8 @@ pub enum OpenAIProtocolError {
     EncodeRequest { source: serde_json::Error },
     #[snafu(display("Invalid OpenAI usage: {source}"))]
     DecodeUsage { source: serde_json::Error },
+    #[snafu(display("Invalid Responses output item: {source}"))]
+    DecodeOutputItem { source: serde_json::Error },
     #[snafu(display("Invalid OpenAI stream event JSON: {source}"))]
     DecodeEvent { source: serde_json::Error },
     #[snafu(display("Invalid Chat Completions chunk: {source}"))]
@@ -65,6 +67,11 @@ pub enum OpenAIProtocolError {
     DecodeToolArguments {
         id: String,
         source: serde_json::Error,
+    },
+    #[snafu(display("Arguments for tool call {id} are not a JSON object"))]
+    InvalidToolInput {
+        id: String,
+        backtrace: snafu::Backtrace,
     },
     #[snafu(display("Invalid reasoning signature JSON: {source}"))]
     DecodeReasoningSignature { source: serde_json::Error },
@@ -171,10 +178,10 @@ pub enum OpenAIProtocolError {
         kind: String,
         backtrace: snafu::Backtrace,
     },
-    #[snafu(display("Unsuccessful Responses status {status}, incomplete reason {reason}"))]
+    #[snafu(display("Unsuccessful Responses status {status:?}, incomplete reason {reason:?}"))]
     UnsuccessfulResponse {
-        status: Value,
-        reason: Value,
+        status: Option<String>,
+        reason: Option<String>,
         backtrace: snafu::Backtrace,
     },
     #[snafu(display("Event receiver disconnected: {source}"))]

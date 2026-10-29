@@ -28,4 +28,6 @@ pub enum ProtocolError {
     OpenAI { source: OpenAIProtocolError },
     #[snafu(transparent)]
     Sse { source: super::SseError },
+    #[snafu(transparent)]
+    Body { source: super::BodyError },
 }

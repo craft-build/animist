@@ -586,17 +586,13 @@ async fn invalid_provider_policy_fails_before_transport() {
             ..
         }
     ));
-    let invalid_header = Provider::new(
+    assert!(matches!(
         Anthropic::new(
             AnthropicConfig::builder()
                 .api_key("invalid\nkey")
                 .base_url("http://127.0.0.1:1")
                 .build(),
-        )
-        .unwrap(),
-    );
-    assert!(matches!(
-        invalid_header.list_models().await,
+        ),
         Err(ProviderError::CredentialHeader { .. })
     ));
 }

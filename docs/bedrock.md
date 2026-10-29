@@ -120,9 +120,9 @@ Thinking support, required thinking, and advertised efforts are taken from
 
 - Messages uses Anthropic's disabled/adaptive/budget settings and effort values.
   Budgets must be at least 1,024 tokens and below the output limit.
-- OpenAI-compatible APIs use `reasoning_effort`. Token-based budgets are rejected.
-  Requested efforts must appear in the model's metadata and be representable by
-  the selected protocol. Availability is still enforced by the service.
+- OpenAI-compatible APIs use `reasoning_effort` with the same policy as the
+  OpenAI provider: token budgets and the `Adaptive` and `Max` effort values are
+  rejected, and requested efforts must appear in the model's metadata. Availability is still enforced by the service.
 - Disabling new thinking does not discard history. Native Messages preserves
   signatures and redacted payloads; Responses preserves its opaque reasoning
   items. Chat Completions does not enable the nonstandard `reasoning_content`
@@ -176,8 +176,8 @@ At-depth system messages are rejected by default; `MoveToPreamble` preserves
 instruction authority by appending ordered text blocks to Converse's `system`.
 
 The decoder validates both prelude and message CRC32 checksums, header framing
-and uniqueness, lengths, and truncated frames. The total exchange, and therefore
-each frame and assembled output, is bounded to 16 MiB of wire data. Unread HTTP
+and uniqueness, lengths, and truncated frames. Each frame is bounded to 16 MiB
+and the total exchange, and therefore assembled output, to 256 MiB of wire data. Unread HTTP
 bytes, framing state, and assembled content are separate request-owned state.
 No background assembly task is spawned; dropping the exchange cancels transport.
 

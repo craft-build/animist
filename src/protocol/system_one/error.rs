@@ -26,7 +26,7 @@ pub enum SystemOneError {
     #[snafu(display("Failed to encode System One request: {source}"))]
     EncodeRequest { source: serde_json::Error },
     #[snafu(display("Failed to read System One response: {source}"))]
-    ReadResponse { source: reqwest::Error },
+    ReadResponse { source: crate::protocol::BodyError },
     #[snafu(display("Invalid System One response: {source}"))]
     DecodeResponse { source: serde_json::Error },
     #[snafu(display("Missing decision answer for {question}"))]
