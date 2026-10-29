@@ -355,24 +355,8 @@ impl Agent {
                     .build());
                 }
                 let start = cursor;
-                let mut claims = Vec::new();
-                while cursor < calls.len() && claims.len() < self.config.max_concurrent_tools {
-                    let call = &calls[cursor];
-                    let declared = self
-                        .tools
-                        .get(&call.name)
-                        .map(|tool| tool.scheduling(&call.input))
-                        .unwrap_or_default();
-                    let claim = match &self.tool_scheduling_policy {
-                        Some(policy) => policy.scheduling(call, declared),
-                        None => declared,
-                    };
-                    if claims.iter().any(|previous| claim.conflicts(previous)) {
-                        break;
-                    }
-                    claims.push(claim);
-                    cursor += 1;
-                }
+                let claims = self.wave_claims(&calls, cursor);
+                cursor += claims.len();
                 let skipped = failure.is_some();
                 let mut running: FuturesUnordered<_> = calls[start..cursor]
                     .iter()
@@ -653,6 +637,81 @@ impl Agent {
             }),
             None => Err(error::CancelledSnafu.build()),
         }
+    }
+
+    /// Claims for the maximal bounded conflict-free wave starting at `start`.
+    ///
+    /// The wave stays contiguous in call order; a conflicting call is a
+    /// barrier, so later independent calls never overtake it.
+    fn wave_claims(&self, calls: &[ToolCall], start: usize) -> Vec<ToolScheduling> {
+        let mut claims = Vec::new();
+        let mut cursor = start;
+        while cursor < calls.len() && claims.len() < self.config.max_concurrent_tools {
+            let call = &calls[cursor];
+            let declared = self
+                .tools
+                .get(&call.name)
+                .map(|tool| tool.scheduling(&call.input))
+                .unwrap_or_default();
+            let claim = match &self.tool_scheduling_policy {
+                Some(policy) => policy.scheduling(call, declared),
+                None => declared,
+            };
+            if claims.iter().any(|previous| claim.conflicts(previous)) {
+                break;
+            }
+            claims.push(claim);
+            cursor += 1;
+        }
+        claims
+    }
+
+    /// Runs one parent's child calls in bounded conflict-free waves.
+    ///
+    /// Claims only partition waves; each child executes under the parent's
+    /// inherited exclusive reservation. The first fatal child error drops
+    /// in-flight siblings and prevents later waves.
+    pub(crate) async fn execute_child_waves(
+        &self,
+        run: &RunContext,
+        calls: &[ToolCall],
+        parent_call_id: &str,
+        depth: u32,
+        visible: &[crate::provider::Tool],
+    ) -> Result<Vec<ToolOutput>> {
+        let mut outputs: Vec<Option<ToolOutput>> = (0..calls.len()).map(|_| None).collect();
+        let mut cursor = 0;
+        while cursor < calls.len() {
+            let start = cursor;
+            cursor += self.wave_claims(calls, cursor).len();
+            let mut running: FuturesUnordered<_> = calls[start..cursor]
+                .iter()
+                .enumerate()
+                .map(|(offset, call)| async move {
+                    let output = self
+                        .execute_tool(
+                            run,
+                            call,
+                            Some(parent_call_id),
+                            depth,
+                            visible,
+                            ToolScheduling::Exclusive,
+                        )
+                        .await;
+                    (start + offset, output)
+                })
+                .collect();
+            while let Some((index, output)) = running.next().await {
+                match output {
+                    Ok(output) => outputs[index] = Some(output),
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(outputs
+            .into_iter()
+            .map(|output| output.expect("every wave runs to completion before the next starts"))
+            .collect())
     }
 
     pub(crate) async fn execute_tool(

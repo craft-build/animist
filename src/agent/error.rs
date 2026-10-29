@@ -38,6 +38,8 @@ pub enum AgentError {
     ChildCallLimitExceeded { backtrace: snafu::Backtrace },
     #[snafu(display("Only exclusive tools may dispatch children"))]
     ChildDispatchRequiresExclusive { backtrace: snafu::Backtrace },
+    #[snafu(display("Concurrent child dispatch is only available to top-level calls"))]
+    NestedConcurrentDispatch { backtrace: snafu::Backtrace },
     #[snafu(display("Tool {name} timed out; external effects may have occurred"))]
     ToolTimeout {
         name: String,

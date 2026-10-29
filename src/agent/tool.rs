@@ -280,6 +280,49 @@ impl ToolContext<'_> {
             .await
     }
 
+    /// Dispatches child calls concurrently under the top-level wave rules.
+    /// Exclusive top-level parents fan out into bounded, conflict-free
+    /// waves; results arrive in call order, per-child failures stay
+    /// `is_error` outputs, and fatal errors drop siblings with the typed
+    /// error. See *Bounded scheduling* in `docs/agents.md`.
+    pub async fn dispatch_all(&self, calls: Vec<ToolCall>) -> Result<Vec<ToolOutput>> {
+        if self.scheduling != ToolScheduling::Exclusive {
+            return Err(super::error::ChildDispatchRequiresExclusiveSnafu.build());
+        }
+        if self.parent_call_id.is_some() {
+            return Err(super::error::NestedConcurrentDispatchSnafu.build());
+        }
+        if self
+            .children
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |count| {
+                    count
+                        .checked_add(u64::try_from(calls.len()).unwrap_or(u64::MAX))
+                        .filter(|next| *next <= self.agent.config().max_child_calls)
+                },
+            )
+            .is_err()
+        {
+            return Err(super::error::ChildCallLimitExceededSnafu.build());
+        }
+        let _gate = self
+            .run
+            .cancellation
+            .race(async { Ok(self.child_gate.lock().await) })
+            .await?;
+        self.agent
+            .execute_child_waves(
+                self.run,
+                &calls,
+                &self.call.id,
+                self.depth + 1,
+                self.visible,
+            )
+            .await
+    }
+
     /// Emits a progress note for this call; display-only, never persisted.
     pub async fn progress(&self, content: impl Into<String>) {
         self.run

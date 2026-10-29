@@ -139,7 +139,8 @@ trait. Tool execution remains outside providers and protocols.
 
 `ToolContext` exposes the call, parent identity, run cancellation, statistics, and
 progress. Its `dispatch` method executes child calls through the same registry,
-layers, cancellation, and nesting limit. It does not expose raw implementations.
+layers, cancellation, and nesting limit; `dispatch_all` runs a set of child calls
+under the top-level wave rules. Neither exposes raw implementations.
 Child calls are internal execution details; their results are incorporated by the
 parent tool rather than inserted as unmatched model tool results.
 
@@ -171,27 +172,39 @@ It polls owned futures without spawning detached tasks. Events and revisions may
 arrive in completion order, but model-facing result slots remain in call order.
 Layers must be concurrency-safe when parallel execution is enabled.
 
-Only exclusive contexts may dispatch children. Their child tree inherits the
-parent's exclusive reservation, without acquiring another root slot. Each parent
-serializes its children, including their descendants; sibling dispatch attempts
-are capped by `max_child_calls` (default `32`, counting all attempts). Nesting is
-capped by `max_tool_depth` (default `8`). This conservative contract avoids
-parent/child permit deadlocks and cross-tree resource conflicts. Resource-claimed
-tools must not dispatch children; use an exclusive orchestration tool instead.
+Only exclusive contexts may dispatch children. `ToolContext::dispatch` runs one
+child at a time; `dispatch_all` fans a set out under the same wave rules as
+top-level calls: contiguous conflict-free waves in call order, claims from the
+children's declarations and `ToolSchedulingPolicy`, bounded by
+`max_concurrent_tools`. Results come back in call order while events arrive in
+completion order. The child tree inherits the parent's exclusive reservation,
+without acquiring another root slot. This stays deadlock-free: an exclusive claim
+conflicts with every claim, so the parent executes alone in its top-level wave;
+its children claim no resources any wave waits on; and only the parent ever takes
+its child gate. Concurrency therefore only ever expands under one running call.
+Calling `dispatch_all` from a child context is rejected with a typed error, so
+orchestrators inside a concurrent set stay serial through `dispatch`. Sibling
+dispatch attempts are capped by `max_child_calls` (default `32`, counting every
+attempt in a `dispatch_all` batch upfront); nesting is capped by `max_tool_depth`
+(default `8`). Resource-claimed tools must not dispatch children; use an
+exclusive orchestration tool instead.
 
 `max_tool_calls` (default `1024`) caps admitted calls across the whole run,
 including nested, denied, unknown, and hidden calls. Budget/depth errors returned
-by child dispatch remain typed errors for the parent to handle. The final
-advertised declaration set of each inference attempt also gates every model and
-child call for that step. Registration alone does not grant visibility.
+by `dispatch` and `dispatch_all` remain typed errors for the parent to handle.
+The final advertised declaration set of each inference attempt also gates every
+model and child call for that step. Registration alone does not grant visibility.
 
 `tool_timeout_ms` defaults to no timeout and covers the executor future, including
 time it spends dispatching children, but not its outer authorization/result hooks.
 Timeouts terminate the run with `ToolTimeout`; cancellation, stop, or a fatal
 pipeline error drops sibling futures and prevents later waves from executing.
-Denial only affects the denied call. Completed results are retained; unfinished
-calls have explicit error results. Neither timeout nor cancellation guarantees
-that external effects stopped or were rolled back, and neither retries a tool.
+Denial only affects the denied call. At the top level, completed results are
+retained and unfinished calls have explicit error results; inside `dispatch_all`,
+a fatal child error instead drops its in-flight siblings, skips later child
+waves, and returns the typed error to the parent. Neither timeout nor
+cancellation guarantees that external effects stopped or were rolled back, and
+neither retries a tool.
 Detached work inside tools is outside this guarantee and must not be used.
 Workspace modes, snapshots, permissions UI, and path policy remain in consumers.
 
