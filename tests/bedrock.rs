@@ -758,6 +758,7 @@ async fn signed_messages_keep_reasoning_signatures_redaction_and_tool_results() 
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: Some("lookup".into()),
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],

@@ -38,6 +38,7 @@ fn call(id: &str) -> ContentBlock {
 fn result(id: &str) -> ContentBlock {
     ContentBlock::ToolResult {
         tool_use_id: id.into(),
+        name: None,
         content: "test failed".into(),
         is_error: true,
         loaded_tools: vec![],

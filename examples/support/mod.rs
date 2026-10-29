@@ -315,6 +315,7 @@ pub(crate) async fn run(
                     called_tool = true;
                     results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
+                        name: Some(name.clone()),
                         content: r#"{"value":"animist-ok"}"#.into(),
                         is_error: false,
                         loaded_tools: vec![],

@@ -113,6 +113,9 @@ pub enum ContentBlock {
     },
     ToolResult {
         tool_use_id: String,
+        /// History metadata; omitted by protocol adapters and absent in legacy results.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
         content: ToolContents,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,

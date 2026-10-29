@@ -241,6 +241,7 @@ fn system_replay_is_text_only_and_reports_original_locations() {
         },
         ContentBlock::ToolResult {
             tool_use_id: "call".into(),
+            name: None,
             content: "result".into(),
             is_error: false,
             loaded_tools: vec![],

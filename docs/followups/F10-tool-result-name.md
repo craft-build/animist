@@ -48,4 +48,17 @@ entries.
 
 ## Completion note
 
-_(fill in when done)_
+Implemented option 1: optional, omitted-when-absent `ToolResult::name`, populated
+from the call by the agent for placeholders and final results. Legacy histories
+load without a name. Anthropic, OpenAI, and Bedrock Converse requests omit it.
+The decision, legacy lookup fallback, and source-breaking construction/pattern
+changes are documented in `docs/history.md`; release with `feat!:`.
+
+Integration coverage checks named success/error/interrupted results, persistence,
+legacy omission, and exact provider request bodies. Craft cleanup remains a
+post-release task.
+
+Review found no medium-or-higher issues; its formatting note was fixed.
+Validation passed: `cargo fmt --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`,
+`cargo test --features bedrock`, and `cargo doc --no-deps`.

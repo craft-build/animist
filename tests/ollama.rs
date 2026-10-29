@@ -144,6 +144,7 @@ async fn streams_and_replays_ollama_reasoning_with_tools() {
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: Some("lookup".into()),
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],

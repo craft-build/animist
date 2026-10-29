@@ -159,6 +159,7 @@ impl Protocol for Converse {
                         content,
                         is_error,
                         loaded_tools,
+                        ..
                     } => {
                         ensure!(loaded_tools.is_empty(), error::UnsupportedLoadedToolsSnafu);
                         let content = content

@@ -113,6 +113,7 @@ fn converse_translates_images_tools_signed_reasoning_and_model_specific_fields()
             Role::User,
             vec![ContentBlock::ToolResult {
                 tool_use_id: "call".into(),
+                name: Some("lookup".into()),
                 content: vec![
                     ToolContent::Text {
                         text: "result".into(),

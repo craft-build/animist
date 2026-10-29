@@ -35,6 +35,7 @@ fn call(id: &str) -> ContentBlock {
 fn result(id: &str) -> ContentBlock {
     ContentBlock::ToolResult {
         tool_use_id: id.into(),
+        name: None,
         content: "Interrupted; side effects may have occurred".into(),
         is_error: true,
         loaded_tools: vec![],
@@ -203,6 +204,7 @@ fn interleaved_multimodal_exchanges_and_interrupted_results_are_structurally_val
     }
     let rich_result = ContentBlock::ToolResult {
         tool_use_id: "b".into(),
+        name: Some("historical-tool".into()),
         content: vec![ToolContent::Image {
             source: ImageSource::from_bytes("image/png", &[1, 2]),
         }]

@@ -482,6 +482,7 @@ fn shared_chat_adapter_replays_reasoning_only_when_enabled() {
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "a".into(),
+                name: Some("lookup".into()),
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],

@@ -338,12 +338,14 @@ async fn thinking_signatures_redaction_and_interleaved_tools_survive_replay() {
         .content(vec![
             ContentBlock::ToolResult {
                 tool_use_id: "call-a".into(),
+                name: Some("lookup".into()),
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],
             },
             ContentBlock::ToolResult {
                 tool_use_id: "call-b".into(),
+                name: Some("lookup".into()),
                 content: "Failed".into(),
                 is_error: true,
                 loaded_tools: vec![],

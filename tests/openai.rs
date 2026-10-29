@@ -330,6 +330,7 @@ async fn responses_streams_and_replays_encrypted_reasoning() {
         .kind(MessageKind::Turn)
         .content(vec![ContentBlock::ToolResult {
             tool_use_id: "call-1".into(),
+            name: Some("lookup".into()),
             content: "Found".into(),
             is_error: false,
             loaded_tools: vec![],
@@ -534,6 +535,7 @@ async fn chat_replays_tool_results_before_followup_text() {
         .content(vec![
             ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: Some("lookup".into()),
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],

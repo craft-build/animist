@@ -313,6 +313,7 @@ impl Agent {
                 .build();
             let mut results: Vec<_> = calls.iter().map(|call| ContentBlock::ToolResult {
                 tool_use_id: call.id.clone(),
+                name: Some(call.name.clone()),
                 content: "Tool execution interrupted or not completed; external effects may have occurred".into(),
                 is_error: true,
                 loaded_tools: Vec::new(),
@@ -412,6 +413,7 @@ impl Agent {
                     };
                     results[index] = ContentBlock::ToolResult {
                         tool_use_id: call.id.clone(),
+                        name: Some(call.name.clone()),
                         content: output.content,
                         is_error: output.is_error,
                         loaded_tools: output.loaded_tools,

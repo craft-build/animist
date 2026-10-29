@@ -176,6 +176,7 @@ fn unsigned_reasoning_is_rejected_instead_of_silently_omitted() {
                     .kind(MessageKind::Turn)
                     .content(vec![ContentBlock::ToolResult {
                         tool_use_id: "call-1".into(),
+                        name: None,
                         content: "Found".into(),
                         is_error: false,
                         loaded_tools: vec![],
@@ -248,6 +249,7 @@ fn chat_reasoning_only_and_tool_loop_history_survive_when_new_thinking_is_off() 
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: None,
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],
@@ -352,6 +354,7 @@ fn default_chat_dialect_preserves_existing_assistant_wire_shapes() {
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: None,
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],
@@ -455,6 +458,7 @@ fn responses_replays_complete_opaque_items_and_rejects_cross_protocol_conversion
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: None,
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],

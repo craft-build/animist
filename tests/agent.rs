@@ -494,6 +494,7 @@ async fn typed_rich_output_survives_events_history_revisions_and_next_request() 
     ] if text == "Partial capture"));
     let expected = ContentBlock::ToolResult {
         tool_use_id: "rich".into(),
+        name: Some("screenshot".into()),
         content: output.content,
         is_error: output.is_error,
         loaded_tools: output.loaded_tools,
@@ -507,8 +508,9 @@ async fn typed_rich_output_survives_events_history_revisions_and_next_request() 
     assert_eq!(result.revisions().len(), 1);
     assert_eq!(result.latest().message().content, vec![expected.clone()]);
     assert!(matches!(&result.verbatim().message().content[0],
-        ContentBlock::ToolResult { is_error: true, content, .. }
-        if matches!(content.0.as_slice(), [ToolContent::Text { text }] if text.contains("interrupted"))
+        ContentBlock::ToolResult { name, is_error: true, content, .. }
+        if name.as_deref() == Some("screenshot")
+            && matches!(content.0.as_slice(), [ToolContent::Text { text }] if text.contains("interrupted"))
     ));
     let entries = serde_json::from_slice(&serde_json::to_vec(snapshot.entries()).unwrap()).unwrap();
     let restored = animist::history::History::from_entries(entries);
@@ -563,6 +565,7 @@ impl LayerImpl for ReplayView {
                 Role::User,
                 vec![ContentBlock::ToolResult {
                     tool_use_id: "orphan-from-layer".into(),
+                    name: None,
                     content: "invalid".into(),
                     is_error: false,
                     loaded_tools: vec![],
@@ -603,6 +606,7 @@ async fn restored_history_and_layer_views_are_checked_before_custom_provider_inf
             Role::User,
             vec![ContentBlock::ToolResult {
                 tool_use_id: "old".into(),
+                name: None,
                 content: vec![ToolContent::Image {
                     source: animist::history::ImageSource::from_bytes("image/png", &[1]),
                 }]
@@ -1020,12 +1024,12 @@ async fn unknown_and_invalid_tools_become_results_not_run_failures() {
     agent.run(input(), RunOptions::default()).await.unwrap();
     assert_eq!(count.load(Ordering::Relaxed), 0);
     let history = agent.history().current().await;
-    assert!(
-        history[2]
-            .content
-            .iter()
-            .all(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
-    );
+    for (block, expected_name) in history[2].content.iter().zip(["missing", "echo"]) {
+        assert!(
+            matches!(block, ContentBlock::ToolResult { name, is_error: true, .. }
+            if name.as_deref() == Some(expected_name))
+        );
+    }
 }
 
 #[tokio::test]
@@ -1692,6 +1696,7 @@ async fn ten_call_steps_retain_only_the_placeholder_and_ordered_final_results() 
             .rev()
             .map(|delay| ContentBlock::ToolResult {
                 tool_use_id: format!("call-{delay}"),
+                name: Some("scheduled".into()),
                 content: delay.to_string().into(),
                 is_error: false,
                 loaded_tools: Vec::new(),
@@ -1830,6 +1835,12 @@ async fn dropping_after_a_partial_completion_keeps_completed_and_interrupted_res
     let snapshot = agent.history().snapshot().await;
     let result = &snapshot.entries()[2];
     assert_eq!(result.revisions().len(), 1);
+    for message in [result.verbatim(), result.latest()] {
+        for (block, expected_name) in message.message().content.iter().zip(["echo", "hang"]) {
+            assert!(matches!(block, ContentBlock::ToolResult { name, .. }
+                if name.as_deref() == Some(expected_name)));
+        }
+    }
     assert!(result.verbatim().message().content.iter().all(|block| {
         matches!(block, ContentBlock::ToolResult { is_error: true, content, .. }
             if matches!(&content.0[..], [ToolContent::Text { text }] if text.contains("interrupted")))

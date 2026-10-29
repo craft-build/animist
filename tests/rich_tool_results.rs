@@ -42,6 +42,7 @@ fn result(content: ToolContents, loaded_tools: Vec<String>) -> Message {
         .kind(MessageKind::Turn)
         .content(vec![ContentBlock::ToolResult {
             tool_use_id: "call-1".into(),
+            name: Some("screenshot".into()),
             content,
             is_error: true,
             loaded_tools,
@@ -82,6 +83,45 @@ fn request<P: Protocol<Request = Value>>(
             .build(),
         options,
     )
+}
+
+#[test]
+fn tool_result_names_are_optional_history_metadata_not_protocol_fields() {
+    let named = result("Found".into(), vec![]);
+    let encoded = serde_json::to_value(&named).unwrap();
+    assert_eq!(encoded["content"][0]["name"], "screenshot");
+    assert_eq!(serde_json::from_value::<Message>(encoded).unwrap(), named);
+
+    let mut legacy = named.clone();
+    let ContentBlock::ToolResult { name, .. } = &mut legacy.content[0] else {
+        panic!("expected a tool result");
+    };
+    *name = None;
+    let encoded = serde_json::to_value(&legacy).unwrap();
+    assert!(encoded["content"][0].get("name").is_none());
+    assert_eq!(serde_json::from_value::<Message>(encoded).unwrap(), legacy);
+
+    for message in [&named, &legacy] {
+        let messages = std::slice::from_ref(message);
+        let anthropic = request(&Messages, messages, &AnthropicOptions::default()).unwrap();
+        assert_eq!(
+            anthropic["messages"][1],
+            json!({"role":"user","content":[{
+                "type":"tool_result","tool_use_id":"call-1","is_error":true,
+                "content":[{"type":"text","text":"Found"}]
+            }]})
+        );
+        let chat = request(&ChatCompletions, messages, &OpenAiOptions::default()).unwrap();
+        assert_eq!(
+            chat["messages"][1],
+            json!({"role":"tool","tool_call_id":"call-1","content":"Found"})
+        );
+        let responses = request(&Responses, messages, &OpenAiOptions::default()).unwrap();
+        assert_eq!(
+            responses["input"][1],
+            json!({"type":"function_call_output","call_id":"call-1","output":"Found"})
+        );
+    }
 }
 
 #[test]

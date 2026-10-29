@@ -162,6 +162,7 @@ impl Protocol for Messages {
                         content,
                         is_error,
                         loaded_tools,
+                        ..
                     } if message.role == Role::User => {
                         ensure!(loaded_tools.is_empty(), UnsupportedLoadedToolsSnafu);
                         for part in &content.0 {

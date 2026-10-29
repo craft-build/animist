@@ -88,6 +88,30 @@ that finishes closing every call retains the source and one final revision.
 There is no snapshot or serialization format change; already captured snapshots
 and older persisted entries retain their existing revision sequences.
 
+### Tool-result names
+
+`ContentBlock::ToolResult` carries an optional `name: Option<String>` as history
+metadata. The agent copies the call's name into every result, including initial
+interrupted placeholders, successful outputs, errors, and skipped calls. Names
+survive serialization and revisions; custom history edits must preserve them
+when retaining the same result.
+
+Storing the name makes results self-describing even when inspecting an entry
+without its call. A lookup-only contract would lose that information when the
+call is unavailable. Anthropic Messages, OpenAI Chat Completions/Responses, and
+Bedrock Converse omit this metadata entirely, so it adds no provider wire cost.
+Replay still matches calls and results by `tool_use_id`; a name does not make
+an orphan result valid inference input.
+
+Older histories load with `name: None`, which is omitted on serialization.
+Consumers may fall back to looking up the matching `ToolUse` by `tool_use_id`;
+when neither a stored name nor a call exists, the name is unknown. No names are
+inferred or backfilled on load.
+
+This is a source-breaking field addition: downstream `ToolResult` construction
+must supply `name: Some(tool_name)` or `name: None`, and exhaustive field patterns
+must bind it or use `..`. Release this change with a `feat!:` marker.
+
 ### Tool-result content compatibility
 
 `ContentBlock::ToolResult::content` is now `ToolContents` rather than `String`.

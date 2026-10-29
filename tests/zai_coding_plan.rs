@@ -259,6 +259,7 @@ async fn coding_endpoint_preserves_reasoning_through_streaming_tool_round_trips(
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: Some("lookup".into()),
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],

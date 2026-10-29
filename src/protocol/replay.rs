@@ -255,6 +255,7 @@ mod tests {
     fn result(id: &str) -> ContentBlock {
         ContentBlock::ToolResult {
             tool_use_id: id.into(),
+            name: None,
             content: "done".into(),
             is_error: false,
             loaded_tools: vec![],
@@ -264,6 +265,7 @@ mod tests {
     fn loaded_result(id: &str, names: &[&str]) -> ContentBlock {
         ContentBlock::ToolResult {
             tool_use_id: id.into(),
+            name: None,
             content: "done".into(),
             is_error: false,
             loaded_tools: names.iter().map(|name| (*name).into()).collect(),

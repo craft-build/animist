@@ -164,6 +164,7 @@ async fn streams_and_replays_thinking_through_a_tool_loop() {
             .kind(MessageKind::Turn)
             .content(vec![ContentBlock::ToolResult {
                 tool_use_id: "call-1".into(),
+                name: Some("lookup".into()),
                 content: "Found".into(),
                 is_error: false,
                 loaded_tools: vec![],
