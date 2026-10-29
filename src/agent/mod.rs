@@ -802,6 +802,7 @@ impl Agent {
             ToolDecision::Deny { reason } => {
                 ToolOutput::builder().content(reason).is_error(true).build()
             }
+            ToolDecision::Respond { output } => output,
             ToolDecision::Run => match self
                 .tools
                 .get(&call.name)

@@ -225,10 +225,15 @@ impl ToolImpl for Echo {
 }
 
 #[derive(Clone)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-test toggles, not a state machine"
+)]
 struct Trace {
     name: &'static str,
     log: Arc<Mutex<Vec<String>>>,
     deny: bool,
+    respond: bool,
     retry: bool,
     fail_end: bool,
 }
@@ -258,6 +263,10 @@ impl LayerImpl for Trace {
         Ok(if self.deny {
             animist::agent::ToolDecision::Deny {
                 reason: "denied".into(),
+            }
+        } else if self.respond {
+            animist::agent::ToolDecision::Respond {
+                output: ToolOutput::builder().content("responded").build(),
             }
         } else {
             animist::agent::ToolDecision::Run
@@ -317,6 +326,7 @@ fn trace(name: &'static str, log: Arc<Mutex<Vec<String>>>) -> Trace {
         name,
         log,
         deny: false,
+        respond: false,
         retry: false,
         fail_end: false,
     }
@@ -716,6 +726,271 @@ async fn linked_layers_forward_turn_end_and_short_circuit_denial() {
         agent.run(input(), RunOptions::default()).await,
         Err(AgentError::ShutDown { .. })
     ));
+}
+
+#[tokio::test]
+async fn a_responded_call_skips_the_executor_and_later_pre_hooks() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut first = trace("a", std::sync::Arc::clone(&log));
+    first.respond = true;
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
+    let (tx, rx) = flume::unbounded();
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![call("1", "echo", json!({"text":"never"}))],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Arc::default(),
+        ))
+        .tools(tools)
+        .layers(layers(first, trace("b", std::sync::Arc::clone(&log))))
+        .build();
+    let report = agent
+        .run(input(), RunOptions::builder().events(tx).build())
+        .await
+        .unwrap();
+    agent.shutdown().await.unwrap();
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+    assert_eq!(report.stats.tool_calls, 0);
+    let log = log.lock().await;
+    assert!(log.contains(&"a:pre".to_owned()));
+    assert!(!log.iter().any(|entry| entry == "b:pre"));
+    assert!(
+        log.windows(2)
+            .any(|entries| entries == ["a:post", "b:post"])
+    );
+    drop(log);
+    let events: Vec<_> = rx.try_iter().collect();
+    let started = events
+        .iter()
+        .filter(|event| matches!(event, AgentEvent::ToolStarted { .. }))
+        .count();
+    assert_eq!(started, 0);
+    let finished = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolFinished { call, output } => Some((call.id.as_str(), output)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(finished.0, "1");
+    assert!(matches!(
+        finished.1.content.0.as_slice(),
+        [ToolContent::Text { text }] if text == "responded"
+    ));
+    assert!(!finished.1.is_error);
+    assert!(matches!(
+        &agent.history().current().await[2].content[0],
+        ContentBlock::ToolResult { content, is_error: false, .. } if content == &"responded".into()
+    ));
+}
+
+struct RespondId(&'static str);
+
+#[async_trait]
+impl LayerImpl for RespondId {
+    async fn pre_tool_exec(
+        &self,
+        _agent: &Agent,
+        context: &ToolContext<'_>,
+    ) -> animist::agent::Result<animist::agent::ToolDecision> {
+        Ok(if context.call.id == self.0 {
+            animist::agent::ToolDecision::Respond {
+                output: ToolOutput::builder().content("served").build(),
+            }
+        } else {
+            animist::agent::ToolDecision::Run
+        })
+    }
+}
+
+#[tokio::test]
+async fn responded_outputs_land_in_call_order_without_is_error() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
+    let (tx, rx) = flume::unbounded();
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![
+                        call("1", "echo", json!({"text":"first"})),
+                        call("2", "echo", json!({"text":"second"})),
+                    ],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Arc::default(),
+        ))
+        .tools(tools)
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(RespondId("1")))
+                .build(),
+        )
+        .build();
+    let report = agent
+        .run(input(), RunOptions::builder().events(tx).build())
+        .await
+        .unwrap();
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    assert_eq!(report.stats.tool_calls, 1);
+    let history = agent.history().current().await;
+    assert!(matches!(
+        &history[2].content[0],
+        ContentBlock::ToolResult { tool_use_id, content, is_error: false, .. }
+            if tool_use_id == "1" && content == &"served".into()
+    ));
+    assert!(matches!(
+        &history[2].content[1],
+        ContentBlock::ToolResult { tool_use_id, content, is_error: false, .. }
+            if tool_use_id == "2" && content == &"second".into()
+    ));
+    let events: Vec<_> = rx.try_iter().collect();
+    let mut started = events.iter().filter_map(|event| match event {
+        AgentEvent::ToolStarted { call, .. } => Some(call.id.as_str()),
+        _ => None,
+    });
+    assert_eq!(started.next(), Some("2"));
+    assert_eq!(started.next(), None);
+    let finished: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolFinished { call, output } => Some((
+                call.id.as_str(),
+                matches!(
+                    output.content.0.as_slice(),
+                    [ToolContent::Text { text }] if text == "served" || text == "second"
+                ),
+                output.is_error,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finished.len(), 2);
+    assert!(
+        finished
+            .iter()
+            .all(|(_, content, is_error)| *content && !*is_error)
+    );
+    assert!(finished.iter().map(|(id, _, _)| *id).eq(["1", "2"]));
+}
+
+struct RewriteResponded;
+
+#[async_trait]
+impl LayerImpl for RewriteResponded {
+    async fn pre_tool_exec(
+        &self,
+        _agent: &Agent,
+        _context: &ToolContext<'_>,
+    ) -> animist::agent::Result<animist::agent::ToolDecision> {
+        Ok(animist::agent::ToolDecision::Respond {
+            output: ToolOutput::builder().content("raw").build(),
+        })
+    }
+
+    async fn post_tool_exec(
+        &self,
+        _agent: &Agent,
+        _context: &ToolContext<'_>,
+        _output: ToolOutput,
+    ) -> animist::agent::Result<ToolOutput> {
+        Ok(ToolOutput::builder().content("rewritten").build())
+    }
+}
+
+#[tokio::test]
+async fn post_tool_exec_transforms_a_responded_output() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![call("1", "echo", json!({"text":"never"}))],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Arc::default(),
+        ))
+        .tools(tools)
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(RewriteResponded))
+                .build(),
+        )
+        .build();
+    agent.run(input(), RunOptions::default()).await.unwrap();
+    assert_eq!(count.load(Ordering::Relaxed), 0);
+    assert!(matches!(
+        &agent.history().current().await[2].content[0],
+        ContentBlock::ToolResult { content, is_error: false, .. } if content == &"rewritten".into()
+    ));
+}
+
+#[tokio::test]
+async fn responded_calls_are_admitted_but_not_counted_as_executed() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
+    let replies = || {
+        vec![
+            response(
+                vec![
+                    call("1", "echo", json!({"text":"a"})),
+                    call("2", "echo", json!({"text":"b"})),
+                ],
+                StopReason::ToolUse,
+            ),
+            response(vec![text("done")], StopReason::EndTurn),
+        ]
+    };
+    let within_budget = Agent::builder()
+        .model(model(replies(), false, Arc::default()))
+        .tools(tools.clone())
+        .config(AgentConfig::builder().max_tool_calls(2_u64).build())
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(RespondId("1")))
+                .build(),
+        )
+        .build();
+    let report = within_budget
+        .run(input(), RunOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    assert_eq!(report.stats.tool_calls, 1);
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+    let over_budget = Agent::builder()
+        .model(model(replies(), false, Arc::default()))
+        .tools(tools)
+        .config(AgentConfig::builder().max_tool_calls(1_u64).build())
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(RespondId("1")))
+                .build(),
+        )
+        .build();
+    assert!(matches!(
+        over_budget.run(input(), RunOptions::default()).await,
+        Err(AgentError::ToolCallLimitExceeded { .. })
+    ));
+    assert_eq!(count.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

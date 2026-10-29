@@ -65,11 +65,15 @@ list. All hooks execute head-to-tail, including completion and shutdown.
 | `turn_end` | Observe every admitted run's terminal status |
 | `shutdown` | Release initialized resources |
 
-Transformations receive the previous layer's output. Tool denial/stop
-short-circuits authorization; later layers cannot re-approve it. Post-tool
-transformations still see denied and unknown-tool results. Completion and shutdown
-attempt every node even when an earlier node fails. The first cleanup error is
-returned; if both the run and its completion fail, both errors are retained.
+Transformations receive the previous layer's output. Denial, stop, and respond
+decisions short-circuit authorization; later layers cannot re-approve it. A
+`Respond` decision completes the call with its supplied `ToolOutput` instead of
+executing: the call is admitted against `max_tool_calls`, emits `ToolFinished`
+without `ToolStarted`, and does not count as an executed call in `RunStats`.
+Post-tool transformations still see denied, responded, and unknown-tool results.
+Completion and shutdown attempt every node even when an earlier node fails. The
+first cleanup error is returned; if both the run and its completion fail, both
+errors are retained.
 
 Request transformations do not rewrite stored history. Use them for volatile
 context, budgeted request views, and selecting a fallback model. Layers may remove
@@ -232,7 +236,7 @@ attempt in a `dispatch_all` batch upfront); nesting is capped by `max_tool_depth
 exclusive orchestration tool instead.
 
 `max_tool_calls` (default `1024`) caps admitted calls across the whole run,
-including nested, denied, unknown, and hidden calls. Budget/depth errors returned
+including nested, denied, responded, unknown, and hidden calls. Budget/depth errors returned
 by `dispatch` and `dispatch_all` remain typed errors for the parent to handle.
 The final advertised declaration set of each inference attempt also gates every
 model and child call for that step. Registration alone does not grant visibility.

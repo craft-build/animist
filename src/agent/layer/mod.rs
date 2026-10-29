@@ -18,6 +18,9 @@ pub enum ToolDecision {
     Deny { reason: String },
     /// Terminate the run; unfinished calls close as not executed.
     Stop { reason: String },
+    /// Complete the call with this output; the executor never runs.
+    /// Admitted against `max_tool_calls`, but not counted as executed.
+    Respond { output: ToolOutput },
 }
 
 /// Layer response to an inference failure.

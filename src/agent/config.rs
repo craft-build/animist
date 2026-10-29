@@ -21,6 +21,7 @@ pub struct AgentConfig {
     #[builder(default = 1_usize)]
     pub max_concurrent_tools: usize,
     /// Maximum admitted tool calls per run, including nested and denied.
+    /// Responded calls are admitted but never execute.
     #[builder(default = 1024_u64)]
     pub max_tool_calls: u64,
     /// Maximum child dispatch attempts under one parent.

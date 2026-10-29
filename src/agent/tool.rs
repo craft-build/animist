@@ -83,7 +83,7 @@ pub struct ToolCall {
 }
 
 /// Model-visible tool output; `is_error` marks correctable failures.
-#[derive(Struct!, Builder)]
+#[derive(Struct!, PartialEq, Eq, Builder)]
 #[builder(on(_, into))]
 pub struct ToolOutput {
     pub content: ToolContents,
