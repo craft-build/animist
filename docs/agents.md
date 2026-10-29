@@ -151,6 +151,48 @@ only the model-facing result renders them as text. Layer
 errors and explicit stop decisions terminate the run. Tool implementations are
 never retried automatically. Execution is sequential by default.
 
+### Direct tool tests
+
+Enable the `testing` feature to use `agent::testing::ToolHarness` without a
+provider, model request, or history turn:
+
+```rust,ignore
+let mut harness = ToolHarness::builder()
+    .tools(child_registry)
+    .config(AgentConfig::default())
+    .build()?;
+let cancellation = harness.cancellation();
+let events = harness.events();
+let output = harness.call(my_typed_tool, serde_json::json!({"path": "a.rs"})).await?;
+```
+
+`call` uses the same typed decoding and output conversion as registered tools;
+`call_executor` accepts an erased `ToolExecutor`. Both return structured
+`ToolError`s directly, including `Arguments` failures, rather than rendering them
+as model-visible output. Roots run serially through mutable harness access, with
+generated `harness-N` call identities. `run_id` and `cancellation` can be supplied
+to the builder; `run()` exposes the shared run context and statistics.
+
+Root invocation is deliberately direct: it bypasses authorization layers, timeout
+enforcement, and run counters. Cancellation is cooperative, so a root can await
+`context.run.cancellation.cancelled()`; callers may also drop its invocation
+future. Child `dispatch` and `dispatch_all` use the supplied registry, optional
+`layers` and `tool_scheduling_policy`, normal cancellation, timeouts, and limits.
+The root's declared scheduling claim (with any policy override) controls whether
+it may dispatch children. All registered children are visible. Child depth starts
+at one, per-parent child budgets reset for each root, and admitted-child budgets,
+stop state, statistics, and cancellation persist for the harness's lifetime.
+An explicit child `Stop` decision terminates even a root that catches its dispatch
+error; subsequent roots fail with the same structured `Stopped` source without
+executing. Create a new harness for a fresh run.
+
+`events()` returns a receiver for progress and child execution events. The queue
+is unbounded to permit inspecting progress after a call completes; drain it during
+long-running tests. Receiver clones compete rather than broadcast. The harness
+does not run layer startup, shutdown, turn, or inference hooks; supply layers whose
+tool hooks work independently. Its placeholder model must not be used for
+inference, and attempting that from a layer panics.
+
 ### Bounded scheduling
 
 Set `AgentConfig::max_concurrent_tools` above its default of `1` to opt into

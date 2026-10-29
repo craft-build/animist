@@ -154,7 +154,7 @@ pub trait ToolExecutor {
     ) -> std::result::Result<ToolOutput, ToolError>;
 }
 
-struct TypedTool<T>(T);
+pub(super) struct TypedTool<T>(pub(super) T);
 
 #[async_trait]
 impl<T: ToolImpl> ToolExecutorImpl for TypedTool<T> {

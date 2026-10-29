@@ -50,4 +50,19 @@ one-shot scripted agent.
 
 ## Completion note
 
-_(fill in when done)_
+Implemented behind the `testing` feature as `agent::testing::ToolHarness`.
+Typed and erased roots return structured `ToolError`s directly, expose shared run
+state/cancellation/events, and construct private contexts internally. Child calls
+reuse the agent registry, tool layers, scheduling policy, and execution limits.
+Root calls intentionally bypass layers, timeouts, and counters; cancellation is
+cooperative. The contract and usage are documented under *Typed tools*.
+
+External integration tests cover typed decoding, argument errors, progress,
+cooperative cancellation, child registry/layers, depth/call budgets, exclusive
+reservations, invalid concurrency, and persistent child stops even when caught by
+the root. Validation passed: `cargo fmt --check`,
+`cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`,
+`cargo test --features bedrock`, `cargo test --features testing`, and
+`cargo doc --no-deps` (also with `--features testing`). Independent review is clean
+after fixing child-stop propagation and adding its regression test.
+Not yet released; Craft cleanup remains a downstream followup after release.

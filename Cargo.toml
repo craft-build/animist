@@ -10,6 +10,7 @@ rust-version = "1.95"
 
 [features]
 default = []
+testing = []
 bedrock = [
     "dep:aws-config",
     "dep:aws-credential-types",

@@ -5,6 +5,8 @@ mod error;
 mod layer;
 mod prompt;
 mod run;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod tool;
 
 pub use config::AgentConfig;
