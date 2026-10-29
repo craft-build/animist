@@ -28,6 +28,20 @@ pub enum BedrockError {
     Client { source: reqwest::Error },
     #[snafu(display("Failed to serialize Bedrock request: {source}"))]
     EncodeRequest { source: serde_json::Error },
+    #[snafu(display("Failed to decode Bedrock model listing: {source}"))]
+    DecodeListing { source: serde_json::Error },
+    #[snafu(display("Bedrock model discovery exceeds {limit} response bytes"))]
+    ListingTooLarge {
+        limit: usize,
+        backtrace: snafu::Backtrace,
+    },
+    #[snafu(display("Bedrock model listing returned an empty or repeated token {token:?}"))]
+    InvalidListingToken {
+        token: String,
+        backtrace: snafu::Backtrace,
+    },
+    #[snafu(display("Bedrock model listing returned an empty model ID"))]
+    EmptyListedModelId { backtrace: snafu::Backtrace },
     #[snafu(display("Failed to construct Bedrock HTTP request: {source}"))]
     Request { source: http::Error },
     #[snafu(display("Failed to resolve AWS credentials: {source}"))]

@@ -1,6 +1,7 @@
 //! Bedrock native API routing with AWS credentials and `SigV4` authentication.
 
 mod error;
+mod listing;
 
 use std::time::{Duration, SystemTime};
 
@@ -55,6 +56,17 @@ pub enum Protocol {
     Responses,
 }
 
+/// Source used to discover Bedrock model IDs.
+#[derive(crate::Enum!, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingMode {
+    /// Return configured catalog entries without AWS requests.
+    #[default]
+    Catalog,
+    /// Query foundation models and all inference profile pages.
+    ControlPlane,
+}
+
 /// Serializable routing and policy; AWS credentials stay in runtime providers.
 #[derive(crate::StructWithCustomDefault!, PartialEq, Builder, Serialize, Deserialize)]
 #[builder(on(_, into))]
@@ -66,6 +78,11 @@ pub struct BedrockConfig {
     pub profile: Option<String>,
     /// Optional runtime origin, including a port for local mocks.
     pub endpoint_url: Option<String>,
+    /// Optional control-plane origin; independent of the runtime endpoint.
+    pub control_plane_endpoint_url: Option<String>,
+    /// Discovery source; defaults to the explicit catalog.
+    #[builder(default)]
+    pub listing_mode: ListingMode,
     /// Wire protocol for chat requests.
     #[builder(default)]
     pub protocol: Protocol,
@@ -81,7 +98,7 @@ pub struct BedrockConfig {
     /// `anthropic-beta` features appended to Messages requests.
     #[builder(default)]
     pub anthropic_beta: Vec<String>,
-    /// Explicit metadata only; runtime has no OpenAI-compatible model listing.
+    /// Metadata merged by exact ID over control-plane listings.
     pub catalog: Option<crate::catalog::ProviderCatalog>,
 }
 
@@ -97,6 +114,7 @@ pub struct Bedrock {
     client: reqwest::Client,
     region: Region,
     endpoint: reqwest::Url,
+    control_plane_endpoint: reqwest::Url,
     credentials: RwLock<SharedCredentialsProvider>,
     managed_credentials: bool,
 }
@@ -169,21 +187,14 @@ impl Bedrock {
             .unwrap_or_else(|| format!("https://bedrock-runtime.{}.amazonaws.com", region.as_ref()))
             .parse::<reqwest::Url>()
             .context(error::EndpointSnafu)?;
-        let loopback = match endpoint.host() {
-            Some(url::Host::Domain("localhost")) => true,
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            _ => false,
-        };
-        ensure!(
-            (endpoint.scheme() == "https" || (endpoint.scheme() == "http" && loopback))
-                && endpoint.username().is_empty()
-                && endpoint.password().is_none()
-                && endpoint.query().is_none()
-                && endpoint.fragment().is_none()
-                && endpoint.path() == "/",
-            error::InvalidEndpointSnafu
-        );
+        validate_origin(&endpoint)?;
+        let control_plane_endpoint = config
+            .control_plane_endpoint_url
+            .clone()
+            .unwrap_or_else(|| format!("https://bedrock.{}.amazonaws.com", region.as_ref()))
+            .parse::<reqwest::Url>()
+            .context(error::EndpointSnafu)?;
+        validate_origin(&control_plane_endpoint)?;
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
@@ -194,6 +205,7 @@ impl Bedrock {
             client,
             region,
             endpoint,
+            control_plane_endpoint,
             credentials: RwLock::new(credentials),
             managed_credentials: false,
         })
@@ -203,20 +215,24 @@ impl Bedrock {
         let body = Bytes::from(serde_json::to_vec(&body).context(error::EncodeRequestSnafu)?);
         let mut url = self.endpoint.clone();
         url.set_path(path);
-        for attempt in 0..self.config.max_attempts {
-            let mut builder = http::Request::builder()
-                .method("POST")
-                .uri(url.as_str())
-                .header("content-type", "application/json")
-                .header("accept", "text/event-stream");
-            if self.config.protocol == Protocol::AnthropicMessages {
-                builder = builder.header("anthropic-version", &self.config.anthropic_version);
-                if !self.config.anthropic_beta.is_empty() {
-                    builder =
-                        builder.header("anthropic-beta", self.config.anthropic_beta.join(","));
-                }
+        let mut builder = http::Request::builder()
+            .method("POST")
+            .uri(url.as_str())
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream");
+        if self.config.protocol == Protocol::AnthropicMessages {
+            builder = builder.header("anthropic-version", &self.config.anthropic_version);
+            if !self.config.anthropic_beta.is_empty() {
+                builder = builder.header("anthropic-beta", self.config.anthropic_beta.join(","));
             }
-            let mut request = builder.body(body.clone()).context(error::RequestSnafu)?;
+        }
+        self.send_signed(builder.body(body).context(error::RequestSnafu)?)
+            .await
+    }
+
+    async fn send_signed(&self, request: http::Request<Bytes>) -> Result<reqwest::Response> {
+        for attempt in 0..self.config.max_attempts {
+            let mut request = request.clone();
             let provider = self.credentials.read().await.clone();
             let identity = provider
                 .provide_credentials()
@@ -239,10 +255,10 @@ impl Bedrock {
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .context(error::SigningHeaderSnafu)?;
             let signable = SignableRequest::new(
-                "POST",
-                url.as_str(),
+                request.method().as_str(),
+                request.uri().to_string(),
                 headers.into_iter(),
-                SignableBody::Bytes(&body),
+                SignableBody::Bytes(request.body()),
             )
             .context(error::SigningSnafu)?;
             let (instructions, _) = sign(signable, &signing_params)
@@ -479,6 +495,9 @@ impl ProviderImpl for Bedrock {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>> {
+        if self.config.listing_mode == ListingMode::ControlPlane {
+            return self.list_control_plane_models().await;
+        }
         Ok(self
             .config
             .catalog
@@ -526,4 +545,23 @@ impl ProviderImpl for Bedrock {
         }
         Ok(())
     }
+}
+
+fn validate_origin(endpoint: &reqwest::Url) -> Result<()> {
+    let loopback = match endpoint.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    };
+    ensure!(
+        (endpoint.scheme() == "https" || (endpoint.scheme() == "http" && loopback))
+            && endpoint.username().is_empty()
+            && endpoint.password().is_none()
+            && endpoint.query().is_none()
+            && endpoint.fragment().is_none()
+            && endpoint.path() == "/",
+        error::InvalidEndpointSnafu
+    );
+    Ok(())
 }

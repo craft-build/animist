@@ -21,7 +21,8 @@ use animist::{
         RequestOptions, StopReason, ThinkingConfig, ThinkingSupport,
         bedrock::{
             Bedrock, BedrockConfig, BedrockError, Credentials, CredentialsError, CredentialsFuture,
-            Protocol, ProvideCredentials, Region, SdkConfig, SharedCredentialsProvider,
+            ListingMode, Protocol, ProvideCredentials, Region, SdkConfig,
+            SharedCredentialsProvider,
         },
     },
 };
@@ -45,6 +46,7 @@ struct Reply {
 
 #[derive(Debug, Clone, PartialEq)]
 struct Recorded {
+    method: String,
     path: String,
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
@@ -60,22 +62,21 @@ async fn read_request(socket: &mut TcpStream) -> Recorded {
         if let Some(end) = bytes.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
             let header = std::str::from_utf8(&bytes[..end]).unwrap();
             let mut lines = header.lines();
-            let path = lines
-                .next()
-                .unwrap()
-                .split_whitespace()
-                .nth(1)
-                .unwrap()
-                .to_owned();
+            let mut start = lines.next().unwrap().split_whitespace();
+            let method = start.next().unwrap().to_owned();
+            let path = start.next().unwrap().to_owned();
             let headers: BTreeMap<_, _> = lines
                 .map(|line| {
                     let (key, value) = line.split_once(':').unwrap();
                     (key.to_lowercase(), value.trim().to_owned())
                 })
                 .collect();
-            let length: usize = headers["content-length"].parse().unwrap();
+            let length: usize = headers
+                .get("content-length")
+                .map_or(0, |length| length.parse().unwrap());
             if bytes.len() >= end + 4 + length {
                 return Recorded {
+                    method,
                     path,
                     headers,
                     body: bytes[end + 4..end + 4 + length].to_vec(),
@@ -246,8 +247,13 @@ fn verify_wire_signature(request: &Recorded, region: &str) {
         })
         .map(|(name, value)| (name.as_str(), value.as_str()));
     let url = format!("http://{}{}", request.headers["host"], request.path);
-    let signable =
-        SignableRequest::new("POST", &url, headers, SignableBody::Bytes(&request.body)).unwrap();
+    let signable = SignableRequest::new(
+        &request.method,
+        &url,
+        headers,
+        SignableBody::Bytes(&request.body),
+    )
+    .unwrap();
     let (instructions, _) = sign(signable, &params).unwrap().into_parts();
     assert_eq!(
         instructions
@@ -1007,6 +1013,144 @@ async fn stream_failures_do_not_restart_inference_after_events_are_emitted() {
             (_, error) => panic!("unexpected error: {error:?}"),
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        task.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn control_plane_listing_signs_gets_and_merges_catalog_over_paginated_profiles() {
+    let catalog = Catalog::from_slice(
+        &serde_json::to_vec(&json!({"amazon-bedrock":{
+            "id":"amazon-bedrock","name":"Amazon Bedrock","models":{
+                "us.example":{"name":"Example","reasoning":true,"cost":{"input":2}},
+                "catalog-only":{"name":"Not discovered"}
+            }
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
+    let source = catalog.provider("amazon-bedrock").unwrap().clone();
+    let (url, task) = server(
+        [
+            json!({"modelSummaries":[{"modelId":"foundation"}]}),
+            json!({"inferenceProfileSummaries":[{"inferenceProfileId":"us.example"}],
+                "nextToken":"a+/= ?&"}),
+            json!({"inferenceProfileSummaries":[{"inferenceProfileId":"us.example"},
+                {"inferenceProfileId":"global.example"}]}),
+        ]
+        .into_iter()
+        .map(|body| {
+            Reply::builder()
+                .status(200_u16)
+                .body(serde_json::to_vec(&body).unwrap())
+                .build()
+        })
+        .collect(),
+    )
+    .await;
+    let provider = Bedrock::from_sdk_config(
+        BedrockConfig::builder()
+            .listing_mode(ListingMode::ControlPlane)
+            .control_plane_endpoint_url(url)
+            .endpoint_url("http://127.0.0.1:1")
+            .catalog(source.clone())
+            .build(),
+        &static_sdk(),
+    )
+    .unwrap();
+    let models = provider.list_models().await.unwrap();
+    assert_eq!(
+        models
+            .iter()
+            .map(|info| info.ids[0].as_str())
+            .collect::<Vec<_>>(),
+        ["foundation", "global.example", "us.example"]
+    );
+    assert_eq!(models[2], source.models["us.example"].info);
+    assert_eq!(models[0].pricing.input, None);
+    assert!(!models[0].features.thinking.supported);
+    let requests = task.await.unwrap();
+    assert_eq!(requests[0].path, "/foundation-models");
+    assert_eq!(requests[1].path, "/inference-profiles");
+    assert_eq!(
+        requests[2].path,
+        "/inference-profiles?nextToken=a%2B%2F%3D+%3F%26"
+    );
+    for request in &requests {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.body, [0_u8; 0]);
+        assert!(!request.headers.contains_key("anthropic-version"));
+        verify_wire_signature(request, "us-east-1");
+    }
+}
+
+#[tokio::test]
+async fn control_plane_listing_rejects_cycles_and_preserves_errors() {
+    for (replies, expected) in [
+        (
+            vec![
+                (200_u16, json!({"modelSummaries":[]})),
+                (
+                    200,
+                    json!({"inferenceProfileSummaries":[],"nextToken":"repeat"}),
+                ),
+                (
+                    200,
+                    json!({"inferenceProfileSummaries":[],"nextToken":"repeat"}),
+                ),
+            ],
+            "token",
+        ),
+        (vec![(403, json!({"message":"denied"}))], "http"),
+        (vec![(200, json!({"unexpected":[]}))], "decode"),
+    ] {
+        let (url, task) = server(
+            replies
+                .into_iter()
+                .map(|(status, body)| {
+                    Reply::builder()
+                        .status(status)
+                        .body(serde_json::to_vec(&body).unwrap())
+                        .build()
+                })
+                .collect(),
+        )
+        .await;
+        let provider = Bedrock::from_sdk_config(
+            BedrockConfig::builder()
+                .listing_mode(ListingMode::ControlPlane)
+                .control_plane_endpoint_url(url)
+                .build(),
+            &static_sdk(),
+        )
+        .unwrap();
+        match (expected, provider.list_models().await.unwrap_err()) {
+            (
+                "token",
+                ProviderError::Bedrock {
+                    source: BedrockError::InvalidListingToken { token, .. },
+                },
+            ) => assert_eq!(token, "repeat"),
+            (
+                "http",
+                ProviderError::Bedrock {
+                    source:
+                        BedrockError::Http {
+                            status: 403, body, ..
+                        },
+                },
+            ) => assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap()["message"],
+                "denied"
+            ),
+            (
+                "decode",
+                ProviderError::Bedrock {
+                    source: BedrockError::DecodeListing { .. },
+                },
+            ) => {}
+            (_, error) => panic!("unexpected listing error: {error:?}"),
+        }
         task.await.unwrap();
     }
 }

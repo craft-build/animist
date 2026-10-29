@@ -85,11 +85,28 @@ not `bedrock-mantle`, Bedrock bearer/API keys, or automatic endpoint fallback.
 
 ## Models and inference policy
 
-`list_models` returns the optional configured `ProviderCatalog`, using its map
-keys as model IDs. With no catalog it returns an empty list; a caller can still
-supply a `Model` directly. Runtime does not implement the OpenAI Models API, so
-this provider never calls `/models`. There is no automatic control-plane model
-discovery in this implementation.
+`ListingMode::Catalog` (the default) returns the optional configured
+`ProviderCatalog`, using its map keys as model IDs, without resolving credentials.
+With no catalog it returns an empty list; a caller can still supply a `Model`
+directly. Runtime never calls the OpenAI `/models` endpoint.
+
+Set `listing_mode(ListingMode::ControlPlane)` to discover foundation model IDs
+and inference profile IDs with signed `GET /foundation-models` and
+`GET /inference-profiles` requests. Profiles are paginated; IDs are deduplicated
+and sorted. Catalog metadata is merged by exact ID over discovered entries;
+catalog-only IDs are not added, and profile metadata is not guessed from names.
+Unknown metadata uses `ModelInfo::default()`, including unknown prices.
+
+The control-plane origin defaults to `https://bedrock.{region}.amazonaws.com`.
+`control_plane_endpoint_url` overrides it independently of runtime and SDK
+endpoint overrides, with the same origin validation rules. Listing uses the
+same injected HTTP client, credential refresh, signing, retries, and HTTP error
+handling as inference. It requires `bedrock:ListFoundationModels` and
+`bedrock:ListInferenceProfiles` permissions. Discovery is bounded to 16 MiB of
+total JSON response bytes and rejects empty/repeated pagination tokens.
+
+Adding listing settings and `BedrockError` variants is a breaking public API
+change for exhaustive matches and direct configuration struct literals.
 
 Catalog metadata is not proof of account access, regional/API availability, or
 inference-profile eligibility. It remains separate from runtime policy and is
