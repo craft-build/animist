@@ -52,3 +52,4 @@ workaround.
 | F08 | [Usage cost](F08-usage-cost.md) | Medium | Craft-side pricing (03) | Open |
 | F09 | [Bedrock client, listing, Converse](F09-bedrock-client-and-converse.md) | Medium | No timeout client, `max_attempts = 1`, craft listing, Converse-only models unsupported (02) | Implemented; reviewed, unreleased |
 | F10 | [Tool name on results](F10-tool-result-name.md) | Low | `history::ext::tool_name_for` (04) | Implemented; reviewed, unreleased |
+| F11 | [Bedrock missing-region guidance](F11-bedrock-missing-region-guidance.md) | Low | Craft-side error rewording (02) | Implemented; reviewed, unreleased |

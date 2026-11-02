@@ -34,6 +34,9 @@ async fn make_provider() -> animist::provider::Result<Provider> {
 SSO, workload roles, or the environment-based credentials supported by that
 chain. Do not put access keys, secret keys, or session tokens in source code.
 `profile` selects a profile; `region` overrides the resolved SDK region.
+Construction fails with `provider::bedrock::BedrockError::MissingRegion` when
+`region`, `AWS_REGION`/`AWS_DEFAULT_REGION`, and the active profile's `region` are
+all absent.
 
 `from_sdk_config(config, &sdk)` accepts caller-owned AWS configuration, including
 custom refreshable credential providers. It does not run default credential

@@ -4,7 +4,10 @@ use snafu::Snafu;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(super)))]
 pub enum BedrockError {
-    #[snafu(display("AWS region was not configured"))]
+    #[snafu(display(
+        "no AWS region resolved: set `region` on the provider config, \
+         AWS_REGION or AWS_DEFAULT_REGION, or a `region` in the active AWS profile"
+    ))]
     MissingRegion { backtrace: snafu::Backtrace },
     #[snafu(display("AWS credential provider was not configured"))]
     MissingCredentialsProvider { backtrace: snafu::Backtrace },
@@ -91,4 +94,22 @@ pub enum BedrockError {
         limit: usize,
         backtrace: snafu::Backtrace,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BedrockError;
+
+    #[test]
+    fn missing_region_names_config_environment_and_profile_fixes() {
+        let error = BedrockError::MissingRegion {
+            backtrace: std::backtrace::Backtrace::capture(),
+        };
+        let message = error.to_string();
+
+        assert!(message.contains("`region` on the provider config"));
+        assert!(message.contains("AWS_REGION"));
+        assert!(message.contains("AWS_DEFAULT_REGION"));
+        assert!(message.contains("`region` in the active AWS profile"));
+    }
 }
