@@ -1,6 +1,8 @@
 #![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
 
 use std::fmt::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use animist::history::{ContentBlock, ImageSource, Message, MessageKind, Role};
 use animist::protocol::{ProtocolError, openai::OpenAIProtocolError};
@@ -119,6 +121,42 @@ fn provider(url: &str, protocol: Protocol) -> Provider {
         .unwrap()
         .with_client(reqwest::Client::new()),
     )
+}
+
+fn default_provider(url: &str) -> Provider {
+    Provider::new(
+        OpenAi::new(
+            OpenAiConfig::builder()
+                .api_key("test-key")
+                .base_url(url)
+                .protocol(Protocol::ChatCompletions)
+                .build(),
+        )
+        .unwrap(),
+    )
+}
+
+/// Reads one full HTTP request (headers plus a content-length body).
+async fn read_request(socket: &mut tokio::net::TcpStream) {
+    let mut request = Vec::new();
+    loop {
+        let mut buf = [0; 1024];
+        let count = socket.read(&mut buf).await.unwrap();
+        assert_ne!(count, 0);
+        request.extend_from_slice(&buf[..count]);
+        if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .unwrap_or("0")
+                .parse()
+                .unwrap();
+            if request.len() >= end + 4 + length {
+                return;
+            }
+        }
+    }
 }
 
 fn model() -> Model {
@@ -749,6 +787,124 @@ async fn sse_accepts_bom_comments_and_multiline_data() {
         }]
     );
     task.await.unwrap();
+}
+
+/// Yields until `settled` is set: a paused runtime otherwise jumps the
+/// virtual clock to the next timer deadline (for example the connect
+/// timeout) before real loopback IO such as the TCP handshake lands.
+/// Yields only poll IO, never advance the clock.
+async fn settle_real_io(settled: Arc<AtomicBool>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !settled.load(Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "loopback IO never settled while yielding"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn default_client_fails_a_stalled_accepted_request_within_the_idle_budget() {
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let settled = Arc::new(AtomicBool::new(false));
+    let server = tokio::spawn({
+        let settled = Arc::clone(&settled);
+        async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.set_nodelay(true).unwrap();
+            read_request(&mut socket).await;
+            settled.store(true, Ordering::SeqCst);
+            let mut buf = [0; 1];
+            assert!(
+                matches!(socket.read(&mut buf).await, Ok(0) | Err(_)),
+                "provider left the stalled connection open"
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_secs(60), listener.accept())
+                    .await
+                    .is_err(),
+                "provider retried the stalled exchange"
+            );
+        }
+    });
+    let pump = tokio::spawn(settle_real_io(Arc::clone(&settled)));
+    let provider = default_provider(&url);
+    let model = model();
+    let (tx, rx) = flume::unbounded();
+    let start = tokio::time::Instant::now();
+    let result = tokio::select! {
+        result = provider.stream_message(&model, &[], "", &[], &tx, RequestOptions::default()) => result,
+        () = tokio::time::sleep(Duration::from_secs(400)) => {
+            panic!("stalled exchange outlived the default read-idle budget");
+        }
+    };
+    let error = result.expect_err("stalled server produced a response");
+    let ProviderError::Transport { source } = &error else {
+        panic!("expected a transport error, got {error:?}");
+    };
+    assert!(source.is_timeout(), "not a timeout: {source}");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(299) && elapsed < Duration::from_secs(301),
+        "timed out after {elapsed:?}, expected the 300-second read-idle budget"
+    );
+    assert!(rx.is_empty());
+    pump.await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn default_client_completes_a_stream_slower_than_the_idle_budget() {
+    use std::time::Duration;
+
+    let content = "x".repeat(360);
+    let body = sse_done(vec![json!({
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": "stop"}]
+    })]);
+    assert!(
+        body.len() > 300,
+        "drip must outlast the 300-second idle budget"
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let settled = Arc::new(AtomicBool::new(false));
+    let server = tokio::spawn({
+        let settled = Arc::clone(&settled);
+        async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.set_nodelay(true).unwrap();
+            read_request(&mut socket).await;
+            settled.store(true, Ordering::SeqCst);
+            socket.write_all(format!("HTTP/1.1 200 Test\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+            for byte in body.as_bytes() {
+                socket.write_all(std::slice::from_ref(byte)).await.unwrap();
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    });
+    let pump = tokio::spawn(settle_real_io(Arc::clone(&settled)));
+    let (tx, _rx) = flume::unbounded();
+    let start = tokio::time::Instant::now();
+    let response = default_provider(&url)
+        .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.message.content,
+        vec![ContentBlock::Text {
+            text: "x".repeat(360)
+        }]
+    );
+    assert!(
+        start.elapsed() > Duration::from_secs(300),
+        "stream finished faster than the idle budget, so it proves nothing"
+    );
+    pump.await.unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

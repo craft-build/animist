@@ -23,8 +23,10 @@ let provider = Provider::new(ZaiCodingPlan::new(ZaiCodingPlanConfig::default())?
 - Credentials load at construction. `reload_auth` rereads environment-backed
   credentials; explicit keys stay fixed. API keys have no refresh exchange, so
   `refresh_auth` is a no-op.
-- `with_client` replaces the pooled runtime HTTP client independently of config.
-  Dropping a streaming future cancels the HTTP exchange.
+- `with_client` replaces the pooled runtime HTTP client independently of
+  config; injected clients own their timeout policy, otherwise the
+  [shared timeout defaults](providers-and-protocols.md#transport-timeouts)
+  apply. Dropping a streaming future cancels the HTTP exchange.
 - Setting names use snake case; omitted fields share the builder's defaults.
 
 ## Models and request policy

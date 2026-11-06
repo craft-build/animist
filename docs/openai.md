@@ -30,7 +30,10 @@ Construct separate providers if an application needs both protocols.
 Configuration supports an explicit `api_key`, an alternate `api_key_env`,
 `base_url` (including `/v1`), organization and project headers, and optional
 catalog metadata. Use `OpenAi::with_client` to inject a runtime HTTP client;
-the client is not part of serializable configuration. Alternate endpoints must implement the
+the client is not part of serializable configuration. Injected clients own
+their timeout policy; the constructor default applies the
+[shared timeout defaults](providers-and-protocols.md#transport-timeouts).
+Alternate endpoints must implement the
 selected OpenAI protocol; this is not a universal compatibility layer.
 
 For local Ollama servers, use the [Ollama provider](ollama.md). It selects

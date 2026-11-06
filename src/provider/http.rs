@@ -1,8 +1,28 @@
-//! Shared HTTP status handling for provider transports.
+//! Shared HTTP client and status handling for provider transports.
+
+use std::time::Duration;
 
 use snafu::ResultExt;
 
 use super::{Result, error};
+
+/// Default connect timeout for every non-Bedrock provider client.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default read-inactivity budget; every received byte resets it.
+/// No total request deadline is set, so actively streaming responses survive.
+const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Shared default client: bounded connect and read-idle timeouts with no
+/// total request deadline. Clients injected through `with_client` own their
+/// timeout policy entirely.
+pub(super) fn default_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_IDLE_TIMEOUT)
+        .build()
+        .expect("fixed valid builder configuration")
+}
 
 /// Cap on failed-response bodies buffered into errors, in bytes.
 pub(crate) const ERROR_BODY_LIMIT: usize = 64 * 1024;

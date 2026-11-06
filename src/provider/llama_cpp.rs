@@ -9,7 +9,7 @@ use serde_json::Value;
 use snafu::{ResultExt, ensure};
 
 use super::credential::ApiKey;
-use super::http::ensure_success;
+use super::http::{default_client, ensure_success};
 use super::openai::ModelList;
 use super::{
     DeciderModel, DeciderProviderImpl, DecisionRequest, DecisionResponse, Effort, EmbeddingModel,
@@ -67,12 +67,13 @@ impl LlamaCpp {
         )?;
         Ok(Self {
             config,
-            client: reqwest::Client::new(),
+            client: default_client(),
             key,
         })
     }
 
-    /// Replaces the runtime HTTP client without changing serializable settings.
+    /// Replaces the runtime HTTP client without changing serializable settings;
+    /// the injected client owns its timeout policy.
     #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;

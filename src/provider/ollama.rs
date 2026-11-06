@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use snafu::{ResultExt, ensure};
 
-use super::http::ensure_success;
+use super::http::{default_client, ensure_success};
 use super::openai::ModelList;
 use super::{
     Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message,
@@ -49,11 +49,12 @@ impl Ollama {
     pub fn new(config: OllamaConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: default_client(),
         }
     }
 
-    /// Replaces the runtime HTTP client without changing serializable settings.
+    /// Replaces the runtime HTTP client without changing serializable settings;
+    /// the injected client owns its timeout policy.
     #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;

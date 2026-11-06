@@ -16,7 +16,10 @@ at runtime. Never put credentials in source code. Credentials are loaded at cons
 `reload_auth` reads the environment again. Explicit keys remain fixed.
 `refresh_auth` is a no-op; API keys have no refresh exchange. Settings support Serde
 with snake-case names and consistent defaults; credentials are omitted on serialization.
-Use `with_client` to replace the runtime HTTP client. `base_url` defaults to
+Use `with_client` to replace the runtime HTTP client; injected clients own
+their timeout policy, otherwise the
+[shared timeout defaults](providers-and-protocols.md#transport-timeouts) apply.
+`base_url` defaults to
 `https://api.synthetic.new/openai/v1`, including the protocol path.
 
 ## Requests and discovery
@@ -24,9 +27,10 @@ Use `with_client` to replace the runtime HTTP client. `base_url` defaults to
 - Set `Model::provider` to a shared `Provider` handle wrapping `Synthetic`.
 - Model IDs are sent unchanged, including `hf:`, `syn:`, and `infinite:` IDs.
   Prefer Synthetic's recommended aliases to pinning rotating model versions.
-- All inference requests stream. There is no overall request timeout imposed by
-  this provider, allowing long pauses in Infinite mode. A custom `reqwest::Client`
-  may supply application-specific timeouts.
+- All inference requests stream. No overall generation deadline is imposed,
+  but pauses longer than 300 seconds without received bytes fail through the
+  [shared read-idle default](providers-and-protocols.md#transport-timeouts);
+  inject a client with `with_client` for a different policy.
 - Dropping the streaming future cancels the request. Event sends apply channel
   backpressure; consume bounded event channels concurrently.
 - Text, images, tool calls/results, and `reasoning_content` are translated

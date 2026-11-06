@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, ensure};
 
 use super::credential::ApiKey;
-use super::http::ensure_success;
+use super::http::{default_client, ensure_success};
 use super::{
     Effort, Message, Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result,
     StreamResponse, ThinkingConfig, Tool, error,
@@ -68,12 +68,13 @@ impl ZaiCodingPlan {
         let key = ApiKey::new(config.api_key.take(), &config.api_key_env, "Bearer ")?;
         Ok(Self {
             config,
-            client: reqwest::Client::new(),
+            client: default_client(),
             key,
         })
     }
 
-    /// Replaces the runtime HTTP client without changing serializable settings.
+    /// Replaces the runtime HTTP client without changing serializable settings;
+    /// the injected client owns its timeout policy.
     #[must_use]
     pub fn with_client(mut self, client: reqwest::Client) -> Self {
         self.client = client;

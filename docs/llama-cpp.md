@@ -20,7 +20,9 @@ let provider = Provider::new(LlamaCpp::new(
 
 The default URL is `http://localhost:9931/v1`, matching current upstream's port;
 set `base_url` to match your server version and launch arguments. Include `/v1`
-and any reverse-proxy prefix. `with_client` injects a runtime HTTP client.
+and any reverse-proxy prefix. `with_client` injects a runtime HTTP client that
+owns its timeout policy; the default applies the
+[shared timeout defaults](providers-and-protocols.md#transport-timeouts).
 
 Authentication is optional: no credentials are read or sent by default. For a
 server started with `--api-key`, explicitly configure `api_key_env("LLAMA_API_KEY")`

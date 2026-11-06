@@ -24,7 +24,9 @@ The default endpoint is `https://api.anthropic.com/v1`; requests use
 `x-api-key` and `anthropic-version: 2023-06-01`. Settings support an explicit
 `api_key`, alternate `api_key_env`, `base_url`, `version`, `beta` headers,
 fallback `max_output_tokens`, and optional catalog metadata. Inject a runtime
-HTTP client with `Anthropic::with_client`.
+HTTP client with `Anthropic::with_client`; injected clients own their timeout
+policy, otherwise the [shared timeout defaults](providers-and-protocols.md#transport-timeouts)
+apply.
 
 Settings support cloning, equality, Serde, and consistent builder/Serde/Rust
 defaults. Explicit keys can be deserialized but are never serialized.

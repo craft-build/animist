@@ -132,6 +132,18 @@ Own:
 Provider metadata in the catalog is descriptive input, not automatic provider
 construction or credential discovery.
 
+### Transport timeouts
+
+All non-Bedrock providers construct their default HTTP client through one
+shared policy: a 10-second connect timeout and a 300-second read-inactivity
+timeout. The read budget applies while awaiting response headers and between
+body reads; any received byte resets it. No overall generation deadline is
+imposed, so active streams of any length are never cut off, while a pause
+longer than 300 seconds without bytes fails as a transport timeout instead of
+hanging forever. Dropping or cancelling a request future is unchanged. A
+client injected through `.with_client` owns all of its own timeout policy.
+[Bedrock](bedrock.md) keeps its separate client, redirect, and retry policy.
+
 ### Compatibility and common types
 
 "OpenAI-compatible" and "Anthropic-compatible" are baselines, not guarantees of

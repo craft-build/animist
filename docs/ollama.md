@@ -34,7 +34,9 @@ let provider = Provider::new(Ollama::new(OllamaConfig::default()));
 
 The default base URL is `http://localhost:11434/v1`. Set `base_url` for another
 local or self-hosted server, including `/v1`. Configuration supports Serde with
-the same defaults as its builder. `with_client` injects a runtime HTTP client.
+the same defaults as its builder. `with_client` injects a runtime HTTP client
+that owns its timeout policy; the default applies the
+[shared timeout defaults](providers-and-protocols.md#transport-timeouts).
 Authentication hooks are no-ops. Direct authenticated Ollama cloud access is not
 part of this local-server provider.
 

@@ -48,6 +48,8 @@ url = { version = "2", optional = true }
 
 [dev-dependencies]
 time = "0.3"
+# Paused-time tests for default timeout policy (test-only feature).
+tokio = { version = "1", features = ["test-util"] }
 
 # stylish Rust lints; CI strict with:
 #   cargo clippy --all-targets --all-features -- -D warnings

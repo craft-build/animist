@@ -15,8 +15,10 @@ let provider = Provider::new(Omlx::new(OmlxConfig::default())?);
 ```
 
 The default URL is `http://localhost:8000/v1`. Configure `base_url` to use another
-server or reverse-proxy prefix, including `/v1`. `with_client` injects a runtime
-HTTP client without adding it to serializable settings.
+server or reverse-proxy prefix, including `/v1`. `with_client` injects a
+runtime HTTP client without adding it to serializable settings; injected
+clients own their timeout policy, otherwise the
+[shared timeout defaults](providers-and-protocols.md#transport-timeouts) apply.
 
 No credentials are read or sent by default. Keyless inference must be permitted
 by the server. For authenticated inference, configure `api_key_env("OMLX_API_KEY")`
