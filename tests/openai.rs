@@ -173,13 +173,16 @@ fn provider_config_round_trips_with_defaults_and_without_credentials() {
         "protocol": "chat_completions",
         "base_url": "http://localhost:8080/v1",
         "organization": "org-test",
-        "project": "project-test"
+        "project": "project-test",
+        "replay_reasoning_content": true
     }))
     .unwrap();
     assert_eq!(config.protocol, Protocol::ChatCompletions);
     assert_eq!(config.api_key_env, "OPENAI_API_KEY");
+    assert!(config.replay_reasoning_content);
     let serialized = serde_json::to_value(&config).unwrap();
     assert_eq!(serialized["protocol"], "chat_completions");
+    assert_eq!(serialized["replay_reasoning_content"], true);
     let restored: OpenAiConfig = serde_json::from_value(serialized).unwrap();
     assert!(restored == config);
 
@@ -187,6 +190,7 @@ fn provider_config_round_trips_with_defaults_and_without_credentials() {
     assert!(defaults == OpenAiConfig::default());
     assert!(defaults == OpenAiConfig::builder().build());
     assert_eq!(defaults.base_url, "https://api.openai.com/v1");
+    assert!(!defaults.replay_reasoning_content);
     assert_eq!(
         serde_json::to_value(defaults.protocol).unwrap(),
         "responses"
@@ -600,6 +604,55 @@ async fn chat_replays_tool_results_before_followup_text() {
     assert!(request["messages"][0]["content"].is_null());
     assert_eq!(request["messages"][1]["role"], "tool");
     assert_eq!(request["messages"][2]["content"][0]["text"], "Summarize it");
+}
+
+#[tokio::test]
+async fn chat_replays_unsigned_thinking_as_reasoning_content_when_configured() {
+    let (url, task) = server(
+        200,
+        sse_done(vec![
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+        ]),
+    )
+    .await;
+    let history = [Message::builder()
+        .role(Role::Assistant)
+        .kind(MessageKind::Turn)
+        .content(vec![
+            ContentBlock::Thinking {
+                thinking: "prior reasoning".into(),
+                signature: None,
+            },
+            ContentBlock::Text {
+                text: "Earlier".into(),
+            },
+        ])
+        .build()];
+    let provider = Provider::new(
+        OpenAi::new(
+            OpenAiConfig::builder()
+                .api_key("test-key")
+                .base_url(url.as_str())
+                .protocol(Protocol::ChatCompletions)
+                .replay_reasoning_content(true)
+                .build(),
+        )
+        .unwrap()
+        .with_client(reqwest::Client::new()),
+    );
+    let (tx, _rx) = flume::unbounded();
+    provider
+        .stream_message(&model(), &history, "", &[], &tx, RequestOptions::default())
+        .await
+        .unwrap();
+    let (headers, request) = task.await.unwrap();
+    assert!(headers.starts_with("POST /v1/chat/completions "));
+    assert_eq!(request["messages"][0]["role"], "assistant");
+    assert_eq!(
+        request["messages"][0]["reasoning_content"],
+        "prior reasoning"
+    );
+    assert_eq!(request["messages"][0]["content"][0]["text"], "Earlier");
 }
 
 #[tokio::test]

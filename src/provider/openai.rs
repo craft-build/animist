@@ -61,6 +61,10 @@ pub struct OpenAiConfig {
     /// Wire protocol for chat requests.
     #[builder(default)]
     pub protocol: Protocol,
+    /// Replays unsigned assistant thinking as `reasoning_content` on Chat
+    /// Completions; set it for endpoints whose server streams that field.
+    #[builder(default)]
+    pub replay_reasoning_content: bool,
     /// `OpenAI-Organization` header, when the key belongs to one.
     pub organization: Option<String>,
     /// `OpenAI-Project` header, when the key is project-scoped.
@@ -158,6 +162,7 @@ impl ProviderImpl for OpenAi {
         }
         let protocol_options = OpenAiOptions::builder()
             .maybe_reasoning_effort(openai_reasoning_effort(model, &options.thinking)?)
+            .replay_reasoning_content(self.config.replay_reasoning_content)
             .build();
         let (path, protocol): (
             &str,

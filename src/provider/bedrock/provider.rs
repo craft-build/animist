@@ -421,8 +421,11 @@ impl ProviderImpl for Bedrock {
             }
             Protocol::ChatCompletions | Protocol::Responses => {
                 let effort = openai_reasoning_effort(model, &options.thinking)?;
+                // Bedrock's OpenAI compatibility surface streams `reasoning_content`
+                // (DeepSeek dialect) and accepts it back on assistant messages.
                 let protocol_options = OpenAiOptions::builder()
                     .maybe_reasoning_effort(effort)
+                    .replay_reasoning_content(true)
                     .build();
                 match self.config.protocol {
                     Protocol::ChatCompletions => {

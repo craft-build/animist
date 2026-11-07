@@ -29,7 +29,9 @@ Construct separate providers if an application needs both protocols.
 
 Configuration supports an explicit `api_key`, an alternate `api_key_env`,
 `base_url` (including `/v1`), organization and project headers, and optional
-catalog metadata. Use `OpenAi::with_client` to inject a runtime HTTP client;
+catalog metadata. `replay_reasoning_content` opts Chat Completions into
+replaying unsigned assistant thinking as `reasoning_content`; see below. Use
+`OpenAi::with_client` to inject a runtime HTTP client;
 the client is not part of serializable configuration. Injected clients own
 their timeout policy; the constructor default applies the
 [shared timeout defaults](providers-and-protocols.md#transport-timeouts).
@@ -82,8 +84,12 @@ modify signatures or send them through a different protocol.
 
 Reasoning history is never silently omitted. Responses rejects unsigned thinking
 without its original reasoning item. Chat Completions rejects unsigned thinking
-unless the composing provider explicitly enables `reasoning_content` replay;
-Synthetic and Z.AI Coding Plan enable it, native OpenAI does not. Disabling
+unless `replay_reasoning_content` is enabled: set it on `OpenAiConfig` for
+endpoints whose server streams `reasoning_content` (the DeepSeek dialect,
+including `base_url` endpoints); native OpenAI does not stream that field, so
+the default stays false, and the flag is inert for the Responses protocol.
+Dedicated providers (Ollama, llama.cpp, oMLX, Synthetic, Z.AI Coding Plan)
+enable replay themselves. Disabling
 thinking for the next generation does not remove prior reasoning from replay.
 Switching to an incompatible protocol requires an explicit caller-side history
 conversion, not an automatic loss of reasoning.

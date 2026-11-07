@@ -128,8 +128,9 @@ Thinking support, required thinking, and advertised efforts are taken from
   rejected, and requested efforts must appear in the model's metadata. Availability is still enforced by the service.
 - Disabling new thinking does not discard history. Native Messages preserves
   signatures and redacted payloads; Responses preserves its opaque reasoning
-  items. Chat Completions does not enable the nonstandard `reasoning_content`
-  replay extension. Incompatible history returns protocol errors.
+  items. Chat Completions replays unsigned thinking as `reasoning_content`
+  (Bedrock's OpenAI surface uses the DeepSeek dialect); signed/redacted
+  reasoning remains rejected there.
 - Output limits use request options, then model configuration, then
   `max_output_tokens` (8,192 by default).
 - Fast mode is rejected; Bedrock service-tier semantics are not silently mapped

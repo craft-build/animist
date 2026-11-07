@@ -832,6 +832,53 @@ async fn signed_messages_keep_reasoning_signatures_redaction_and_tool_results() 
 }
 
 #[tokio::test]
+async fn chat_completions_replays_unsigned_thinking_as_reasoning_content_by_default() {
+    let (url, task) = server(vec![
+        Reply::builder()
+            .status(200_u16)
+            .body(chat_text().into_bytes())
+            .build(),
+    ])
+    .await;
+    let provider = Bedrock::from_sdk_config(
+        BedrockConfig::builder()
+            .protocol(Protocol::ChatCompletions)
+            .endpoint_url(url)
+            .build(),
+        &static_sdk(),
+    )
+    .unwrap();
+    let history = [
+        Message::builder()
+            .role(Role::Assistant)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::Thinking {
+                thinking: "plan".into(),
+                signature: None,
+            }])
+            .build(),
+        Message::builder()
+            .role(Role::User)
+            .kind(MessageKind::Turn)
+            .content(vec![ContentBlock::Text {
+                text: "Hello".into(),
+            }])
+            .build(),
+    ];
+    let (tx, _rx) = flume::unbounded();
+    provider
+        .stream_message(&model(), &history, "", &[], &tx, RequestOptions::default())
+        .await
+        .unwrap();
+    let requests = task.await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(requests[0].path, "/openai/v1/chat/completions");
+    assert_eq!(body["messages"][0]["role"], "assistant");
+    assert_eq!(body["messages"][0]["reasoning_content"], "plan");
+    assert_eq!(body["messages"][1]["content"][0]["text"], "Hello");
+}
+
+#[tokio::test]
 async fn retries_are_bounded_and_resolve_and_sign_with_current_credentials() {
     let (url, task) = server(vec![
         Reply::builder()
