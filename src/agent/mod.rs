@@ -33,7 +33,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::{Mutex, OnceCell};
-use tool::{ToolCall, ToolContext, ToolOutput, ToolRegistry, ToolScheduling, ToolSchedulingPolicy};
+use tool::{
+    ToolCall, ToolContext, ToolOutput, ToolRegistry, ToolScheduling, ToolSchedulingPolicy,
+    ToolScope,
+};
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 
@@ -467,7 +470,15 @@ impl Agent {
                                 .is_error(true)
                                 .build())
                         } else {
-                            self.execute_tool(run, call, None, 0, visible, claim).await
+                            self.execute_tool(
+                                run,
+                                call,
+                                None,
+                                0,
+                                ToolScope::Request(visible),
+                                claim,
+                            )
+                            .await
                         };
                         (start + offset, output)
                     }
@@ -747,7 +758,7 @@ impl Agent {
         calls: &[ToolCall],
         parent_call_id: &str,
         depth: u32,
-        visible: &[crate::provider::Tool],
+        scope: ToolScope<'_>,
     ) -> Result<Vec<ToolOutput>> {
         let mut outputs: Vec<Option<ToolOutput>> = (0..calls.len()).map(|_| None).collect();
         let mut cursor = 0;
@@ -764,7 +775,7 @@ impl Agent {
                             call,
                             Some(parent_call_id),
                             depth,
-                            visible,
+                            scope,
                             ToolScheduling::Exclusive,
                         )
                         .await;
@@ -790,7 +801,7 @@ impl Agent {
         call: &ToolCall,
         parent_call_id: Option<&str>,
         depth: u32,
-        visible: &[crate::provider::Tool],
+        scope: ToolScope<'_>,
         scheduling: ToolScheduling,
     ) -> Result<ToolOutput> {
         tokio::select! {
@@ -802,7 +813,7 @@ impl Agent {
                     None => Err(error::CancelledSnafu.build()),
                 }
             }
-            result = self.execute_tool_inner(run, call, parent_call_id, depth, visible, scheduling) => result,
+            result = self.execute_tool_inner(run, call, parent_call_id, depth, scope, scheduling) => result,
         }
     }
 
@@ -812,7 +823,7 @@ impl Agent {
         call: &ToolCall,
         parent_call_id: Option<&str>,
         depth: u32,
-        visible: &[crate::provider::Tool],
+        scope: ToolScope<'_>,
         scheduling: ToolScheduling,
     ) -> Result<ToolOutput> {
         if depth >= self.config.max_tool_depth {
@@ -841,7 +852,7 @@ impl Agent {
             parent_call_id,
             agent: self,
             depth,
-            visible,
+            scope,
             scheduling,
             children: AtomicU64::default(),
             child_gate: Mutex::default(),
@@ -867,7 +878,7 @@ impl Agent {
             ToolDecision::Run => match self
                 .tools
                 .get(&call.name)
-                .filter(|_| visible.iter().any(|tool| tool.name == call.name))
+                .filter(|_| scope.admits(&call.name))
             {
                 None => ToolOutput::builder()
                     .content(format!("Unknown tool: {}", call.name))

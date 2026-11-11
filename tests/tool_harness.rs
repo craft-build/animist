@@ -8,7 +8,7 @@ use animist::agent::{
     testing::ToolHarness,
     tool::{
         ToolCall, ToolContext, ToolDefinition, ToolError, ToolExecutor, ToolExecutorImpl, ToolImpl,
-        ToolOutput, ToolRegistry, ToolScheduling,
+        ToolOutput, ToolRegistry, ToolScheduling, ToolSelection,
     },
 };
 use async_trait::async_trait;
@@ -142,6 +142,7 @@ async fn erased_executors_observe_cancellation_from_a_cloned_handle() {
 struct Parent {
     parallel: bool,
     scheduling: ToolScheduling,
+    selection: Option<ToolSelection>,
 }
 
 struct PanicChildHook;
@@ -180,6 +181,7 @@ async fn child_panics_are_recorded_at_the_executor_boundary_they_cross() {
                     Parent {
                         parallel,
                         scheduling: ToolScheduling::Exclusive,
+                        selection: None,
                     },
                     json!(["child"]),
                 )
@@ -228,12 +230,18 @@ impl ToolImpl for Parent {
     ) -> Result<ToolOutput, AgentError> {
         let calls: Vec<_> = calls.iter().map(|id| child(id)).collect();
         if self.parallel {
-            let outputs = context.dispatch_all(calls).await?;
+            let outputs = match &self.selection {
+                Some(selection) => context.dispatch_all_in(calls, selection).await?,
+                None => context.dispatch_all(calls).await?,
+            };
             return Ok(outputs.into_iter().next().unwrap());
         }
         let mut output = ToolOutput::builder().content("empty").build();
         for call in calls {
-            output = context.dispatch(call).await?;
+            output = match &self.selection {
+                Some(selection) => context.dispatch_in(call, selection).await?,
+                None => context.dispatch(call).await?,
+            };
         }
         Ok(output)
     }
@@ -263,78 +271,118 @@ impl LayerImpl for DenyEcho {
 #[tokio::test]
 async fn children_use_the_supplied_registry_and_layers_in_both_dispatch_modes() {
     for parallel in [false, true] {
+        for selected in [false, true] {
+            let mut tools = ToolRegistry::default();
+            tools.register(Echo).unwrap();
+            let selection = tools.selection(|_| true);
+            let seen = Seen::default();
+            let mut harness = ToolHarness::builder()
+                .tools(tools)
+                .layers(
+                    AgentLayer::builder()
+                        .layer(Layer::new(DenyEcho(Arc::clone(&seen))))
+                        .build(),
+                )
+                .build()
+                .unwrap();
+            let output = harness
+                .call(
+                    Parent {
+                        parallel,
+                        scheduling: ToolScheduling::Exclusive,
+                        selection: selected.then_some(selection),
+                    },
+                    json!(["a"]),
+                )
+                .await
+                .unwrap();
+            assert!(output.is_error);
+            assert_eq!(output.content, "policy denied".into());
+            assert_eq!(
+                *seen.lock().await,
+                vec![("echo".into(), Some("harness-0".into()))]
+            );
+        }
+    }
+
+    for selected in [false, true] {
         let mut tools = ToolRegistry::default();
         tools.register(Echo).unwrap();
-        let seen = Seen::default();
-        let mut harness = ToolHarness::builder()
-            .tools(tools)
-            .layers(
-                AgentLayer::builder()
-                    .layer(Layer::new(DenyEcho(Arc::clone(&seen))))
-                    .build(),
-            )
-            .build()
-            .unwrap();
+        let selection = tools.selection(|_| true);
+        let mut harness = ToolHarness::builder().tools(tools).build().unwrap();
         let output = harness
             .call(
                 Parent {
-                    parallel,
+                    parallel: false,
                     scheduling: ToolScheduling::Exclusive,
+                    selection: selected.then_some(selection),
                 },
                 json!(["a"]),
             )
             .await
             .unwrap();
-        assert!(output.is_error);
-        assert_eq!(output.content, "policy denied".into());
-        assert_eq!(
-            *seen.lock().await,
-            vec![("echo".into(), Some("harness-0".into()))]
-        );
+        assert_eq!(output.content, "0:a".into());
+        assert_eq!(harness.run().stats.snapshot().await.tool_calls, 1);
     }
-
-    let mut tools = ToolRegistry::default();
-    tools.register(Echo).unwrap();
-    let mut harness = ToolHarness::builder().tools(tools).build().unwrap();
-    let output = harness
-        .call(
-            Parent {
-                parallel: false,
-                scheduling: ToolScheduling::Exclusive,
-            },
-            json!(["a"]),
-        )
-        .await
-        .unwrap();
-    assert_eq!(output.content, "0:a".into());
-    assert_eq!(harness.run().stats.snapshot().await.tool_calls, 1);
 }
 
 #[tokio::test]
 async fn child_limits_and_root_resource_claims_are_enforced() {
-    for (config, parallel, scheduling, expected) in [
+    for (config, parallel, scheduling, selected, expected) in [
         (
             AgentConfig::builder().max_child_calls(1_u64).build(),
             false,
             ToolScheduling::Exclusive,
+            false,
+            "child count",
+        ),
+        (
+            AgentConfig::builder().max_child_calls(1_u64).build(),
+            false,
+            ToolScheduling::Exclusive,
+            true,
             "child count",
         ),
         (
             AgentConfig::builder().max_child_calls(1_u64).build(),
             true,
             ToolScheduling::Exclusive,
+            false,
+            "child count",
+        ),
+        (
+            AgentConfig::builder().max_child_calls(1_u64).build(),
+            true,
+            ToolScheduling::Exclusive,
+            true,
             "child count",
         ),
         (
             AgentConfig::builder().max_tool_depth(1_u32).build(),
             false,
             ToolScheduling::Exclusive,
+            false,
+            "depth",
+        ),
+        (
+            AgentConfig::builder().max_tool_depth(1_u32).build(),
+            false,
+            ToolScheduling::Exclusive,
+            true,
             "depth",
         ),
         (
             AgentConfig::builder().max_tool_calls(1_u64).build(),
             false,
             ToolScheduling::Exclusive,
+            false,
+            "run count",
+        ),
+        (
+            AgentConfig::builder().max_tool_calls(1_u64).build(),
+            false,
+            ToolScheduling::Exclusive,
+            true,
             "run count",
         ),
         (
@@ -344,11 +392,23 @@ async fn child_limits_and_root_resource_claims_are_enforced() {
                 reads: vec![],
                 writes: vec![],
             },
+            false,
+            "reservation",
+        ),
+        (
+            AgentConfig::default(),
+            false,
+            ToolScheduling::Resources {
+                reads: vec![],
+                writes: vec![],
+            },
+            true,
             "reservation",
         ),
     ] {
         let mut tools = ToolRegistry::default();
         tools.register(Echo).unwrap();
+        let selection = tools.selection(|_| true);
         let mut harness = ToolHarness::builder()
             .tools(tools)
             .config(config)
@@ -359,6 +419,7 @@ async fn child_limits_and_root_resource_claims_are_enforced() {
                 Parent {
                     parallel,
                     scheduling,
+                    selection: selected.then_some(selection),
                 },
                 json!(["a", "b"]),
             )
@@ -391,6 +452,189 @@ fn zero_concurrency_is_rejected_before_child_wave_dispatch() {
             .config(AgentConfig::builder().max_concurrent_tools(0_usize).build())
             .build(),
         Err(AgentError::InvalidLimits { .. })
+    ));
+}
+
+#[tokio::test]
+async fn selected_dispatch_admits_only_registered_selection_members() {
+    for parallel in [false, true] {
+        let mut tools = ToolRegistry::default();
+        tools.register(Echo).unwrap();
+        let empty = tools.selection(|_| false);
+        let mut harness = ToolHarness::builder().tools(tools).build().unwrap();
+        let output = harness
+            .call(
+                Parent {
+                    parallel,
+                    scheduling: ToolScheduling::Exclusive,
+                    selection: Some(empty),
+                },
+                json!(["a"]),
+            )
+            .await
+            .unwrap();
+        assert!(output.is_error);
+        assert_eq!(output.content, "Unknown tool: echo".into());
+        assert_eq!(harness.run().stats.snapshot().await.tool_calls, 0);
+    }
+
+    let mut foreign = ToolRegistry::default();
+    foreign.register(Echo).unwrap();
+    let foreign = foreign.selection(|_| true);
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo).unwrap();
+    let mut harness = ToolHarness::builder().tools(tools).build().unwrap();
+    let output = harness
+        .call(
+            Parent {
+                parallel: false,
+                scheduling: ToolScheduling::Exclusive,
+                selection: Some(foreign),
+            },
+            json!(["a"]),
+        )
+        .await
+        .unwrap();
+    assert!(!output.is_error);
+    assert_eq!(output.content, "0:a".into());
+}
+
+struct SelectedRoot(ToolSelection);
+
+struct Outside;
+
+#[async_trait]
+impl ToolImpl for Outside {
+    type Args = Args;
+    type Output = String;
+    type Error = Infallible;
+
+    fn definition(&self) -> ToolDefinition {
+        definition("outside")
+    }
+
+    async fn call(&self, context: &ToolContext<'_>, args: Args) -> Result<String, Infallible> {
+        context.progress(&args.text).await;
+        Ok(format!("{}:{}", context.run.id, args.text))
+    }
+}
+
+#[async_trait]
+impl ToolImpl for SelectedRoot {
+    type Args = serde_json::Value;
+    type Output = ToolOutput;
+    type Error = AgentError;
+
+    fn definition(&self) -> ToolDefinition {
+        definition("selected-root")
+    }
+
+    async fn call(
+        &self,
+        context: &ToolContext<'_>,
+        _args: Self::Args,
+    ) -> Result<ToolOutput, AgentError> {
+        context
+            .dispatch_in(child_of("middle", "middle"), &self.0)
+            .await
+    }
+}
+
+struct Middle {
+    target: &'static str,
+    all_in: bool,
+    selection: ToolSelection,
+}
+
+#[async_trait]
+impl ToolImpl for Middle {
+    type Args = serde_json::Value;
+    type Output = ToolOutput;
+    type Error = AgentError;
+
+    fn definition(&self) -> ToolDefinition {
+        definition("middle")
+    }
+
+    async fn call(
+        &self,
+        context: &ToolContext<'_>,
+        _args: Self::Args,
+    ) -> Result<ToolOutput, AgentError> {
+        let call = child_of("nested", self.target);
+        if self.all_in {
+            let mut outputs = context.dispatch_all_in(vec![call], &self.selection).await?;
+            return Ok(outputs.remove(0));
+        }
+        context.dispatch(call).await
+    }
+}
+
+fn child_of(id: &str, name: &str) -> ToolCall {
+    ToolCall::builder()
+        .id(id)
+        .name(name)
+        .input(json!({"text": id}))
+        .build()
+}
+
+fn empty_selection() -> ToolSelection {
+    ToolRegistry::default().selection(|_| false)
+}
+
+#[tokio::test]
+async fn selected_children_inherit_the_selection_scope() {
+    for target in ["echo", "outside"] {
+        let mut tools = ToolRegistry::default();
+        tools.register(Echo).unwrap();
+        tools.register(Outside).unwrap();
+        tools
+            .register(Middle {
+                target,
+                all_in: false,
+                selection: empty_selection(),
+            })
+            .unwrap();
+        let selection = tools.selection(|entry| entry.definition.name != "outside");
+        let mut harness = ToolHarness::builder().tools(tools).build().unwrap();
+        let output = harness
+            .call(SelectedRoot(selection), Value::Null)
+            .await
+            .unwrap();
+        if target == "echo" {
+            assert!(!output.is_error);
+            assert_eq!(output.content, "0:nested".into());
+        } else {
+            assert!(output.is_error);
+            assert_eq!(output.content, "Unknown tool: outside".into());
+        }
+    }
+
+    let mut tools = ToolRegistry::default();
+    tools.register(Echo).unwrap();
+    tools
+        .register(Middle {
+            target: "echo",
+            all_in: true,
+            selection: empty_selection(),
+        })
+        .unwrap();
+    let selection = tools.selection(|_| true);
+    let mut harness = ToolHarness::builder().tools(tools).build().unwrap();
+    let output = harness
+        .call(SelectedRoot(selection), Value::Null)
+        .await
+        .unwrap();
+    assert!(output.is_error);
+    let failures = harness.run().tool_failures().await;
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].call.id, "middle");
+    let ToolError::Execution { source } = &*failures[0].error else {
+        panic!("expected the nested concurrent dispatch failure");
+    };
+    assert!(matches!(
+        source.downcast_ref::<AgentError>(),
+        Some(AgentError::NestedConcurrentDispatch { .. })
     ));
 }
 

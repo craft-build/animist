@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, error::Error, panic::AssertUnwindSafe};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    panic::AssertUnwindSafe,
+};
 
 use arc_handle::arc_handle;
 use async_trait::async_trait;
@@ -128,6 +132,11 @@ pub trait ToolImpl: Send + Sync + 'static {
     /// The frozen declaration advertised to inference.
     fn definition(&self) -> ToolDefinition;
 
+    /// Application-owned registration metadata; never sent to providers.
+    fn metadata(&self) -> BTreeMap<String, Value> {
+        BTreeMap::new()
+    }
+
     /// Resource claim for one call; defaults to fully exclusive.
     fn scheduling(&self, _input: &Value) -> ToolScheduling {
         ToolScheduling::Exclusive
@@ -147,6 +156,11 @@ pub trait ToolImpl: Send + Sync + 'static {
 pub trait ToolExecutor {
     /// The frozen declaration advertised to inference.
     fn definition(&self) -> ToolDefinition;
+
+    /// Application-owned registration metadata; never sent to providers.
+    fn metadata(&self) -> BTreeMap<String, Value> {
+        BTreeMap::new()
+    }
 
     /// Resource claim for one call; defaults to fully exclusive.
     fn scheduling(&self, _input: &Value) -> ToolScheduling {
@@ -192,6 +206,10 @@ impl<T: ToolImpl> ToolExecutorImpl for TypedTool<T> {
         self.0.definition()
     }
 
+    fn metadata(&self) -> BTreeMap<String, Value> {
+        self.0.metadata()
+    }
+
     fn scheduling(&self, input: &Value) -> ToolScheduling {
         self.0.scheduling(input)
     }
@@ -211,10 +229,53 @@ impl<T: ToolImpl> ToolExecutorImpl for TypedTool<T> {
     }
 }
 
+/// A registered tool: its provider declaration plus application-owned metadata.
+/// Metadata is opaque to Animist and never sent to providers.
+#[derive(Struct!, PartialEq)]
+pub struct ToolEntry {
+    pub definition: ToolDefinition,
+    pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Clone)]
+struct RegisteredTool {
+    entry: ToolEntry,
+    executor: ToolExecutor,
+}
+
+/// Immutable allowlist of tool names built by `ToolRegistry::selection`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolSelection {
+    names: BTreeSet<String>,
+}
+
+impl ToolSelection {
+    /// Read-only membership check; selections cannot be mutated or forged.
+    pub fn contains(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+}
+
+/// The exclusive authorization source for one dispatch pipeline.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ToolScope<'a> {
+    Request(&'a [ToolDefinition]),
+    Selection(&'a ToolSelection),
+}
+
+impl ToolScope<'_> {
+    pub(crate) fn admits(&self, name: &str) -> bool {
+        match self {
+            Self::Request(visible) => visible.iter().any(|tool| tool.name == name),
+            Self::Selection(selection) => selection.contains(name),
+        }
+    }
+}
+
 /// Registration freezes each declaration alongside its executable handle.
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
-    tools: BTreeMap<String, (ToolDefinition, ToolExecutor)>,
+    tools: BTreeMap<String, RegisteredTool>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -230,6 +291,7 @@ impl ToolRegistry {
     }
 
     /// Registers a runtime-named executor under its own declaration.
+    /// Registration captures `metadata` once; later executor state is ignored.
     pub fn register_executor(&mut self, tool: ToolExecutor) -> Result<()> {
         let definition = tool.definition();
         if definition.name.is_empty() {
@@ -241,18 +303,49 @@ impl ToolRegistry {
             }
             .build());
         }
-        self.tools
-            .insert(definition.name.clone(), (definition, tool));
+        let entry = ToolEntry {
+            metadata: tool.metadata(),
+            definition,
+        };
+        self.tools.insert(
+            entry.definition.name.clone(),
+            RegisteredTool {
+                entry,
+                executor: tool,
+            },
+        );
         Ok(())
     }
 
     /// Frozen declarations advertised to inference, sorted by tool name.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.values().map(|(d, _)| d.clone()).collect()
+        self.tools
+            .values()
+            .map(|tool| tool.entry.definition.clone())
+            .collect()
+    }
+
+    /// Registered declarations with their application metadata, name-sorted.
+    pub fn entries(&self) -> Vec<ToolEntry> {
+        self.tools.values().map(|tool| tool.entry.clone()).collect()
+    }
+
+    /// Freezes the entries matching `include` into an immutable name allowlist.
+    /// The predicate runs once, synchronously; the selection stores names only.
+    pub fn selection(&self, include: impl Fn(&ToolEntry) -> bool) -> ToolSelection {
+        ToolSelection {
+            names: self
+                .tools
+                .values()
+                .map(|tool| &tool.entry)
+                .filter(|entry| include(entry))
+                .map(|entry| entry.definition.name.clone())
+                .collect(),
+        }
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&ToolExecutor> {
-        self.tools.get(name).map(|(_, tool)| tool)
+        self.tools.get(name).map(|tool| &tool.executor)
     }
 }
 
@@ -267,7 +360,7 @@ pub struct ToolContext<'a> {
     pub parent_call_id: Option<&'a str>,
     pub(crate) agent: &'a Agent,
     pub(crate) depth: u32,
-    pub(crate) visible: &'a [ToolDefinition],
+    pub(crate) scope: ToolScope<'a>,
     pub(crate) scheduling: ToolScheduling,
     pub(crate) children: std::sync::atomic::AtomicU64,
     pub(crate) child_gate: tokio::sync::Mutex<()>,
@@ -276,6 +369,18 @@ pub struct ToolContext<'a> {
 impl ToolContext<'_> {
     /// Children inherit the exclusive reservation and execute serially.
     pub async fn dispatch(&self, call: ToolCall) -> Result<ToolOutput> {
+        self.dispatch_scoped(call, self.scope).await
+    }
+
+    /// Dispatches one child admitted by an explicit application allowlist.
+    /// Selected names execute even when hidden from the request; the
+    /// selection never widens model or root admission.
+    pub async fn dispatch_in(&self, call: ToolCall, tools: &ToolSelection) -> Result<ToolOutput> {
+        self.dispatch_scoped(call, ToolScope::Selection(tools))
+            .await
+    }
+
+    async fn dispatch_scoped(&self, call: ToolCall, scope: ToolScope<'_>) -> Result<ToolOutput> {
         if self.scheduling != ToolScheduling::Exclusive {
             return Err(super::error::ChildDispatchRequiresExclusiveSnafu.build());
         }
@@ -305,7 +410,7 @@ impl ToolContext<'_> {
                 &call,
                 Some(&self.call.id),
                 self.depth + 1,
-                self.visible,
+                scope,
                 ToolScheduling::Exclusive,
             )
             .await
@@ -317,6 +422,26 @@ impl ToolContext<'_> {
     /// `is_error` outputs, and fatal errors drop siblings with the typed
     /// error. See *Bounded scheduling* in `docs/agents.md`.
     pub async fn dispatch_all(&self, calls: Vec<ToolCall>) -> Result<Vec<ToolOutput>> {
+        self.dispatch_all_scoped(calls, self.scope).await
+    }
+
+    /// Fans child calls out under the wave rules, admitted by an explicit
+    /// application allowlist instead of request visibility. Selected names
+    /// execute even when hidden; model and root admission are unchanged.
+    pub async fn dispatch_all_in(
+        &self,
+        calls: Vec<ToolCall>,
+        tools: &ToolSelection,
+    ) -> Result<Vec<ToolOutput>> {
+        self.dispatch_all_scoped(calls, ToolScope::Selection(tools))
+            .await
+    }
+
+    async fn dispatch_all_scoped(
+        &self,
+        calls: Vec<ToolCall>,
+        scope: ToolScope<'_>,
+    ) -> Result<Vec<ToolOutput>> {
         if self.scheduling != ToolScheduling::Exclusive {
             return Err(super::error::ChildDispatchRequiresExclusiveSnafu.build());
         }
@@ -344,13 +469,7 @@ impl ToolContext<'_> {
             .race(async { Ok(self.child_gate.lock().await) })
             .await?;
         self.agent
-            .execute_child_waves(
-                self.run,
-                &calls,
-                &self.call.id,
-                self.depth + 1,
-                self.visible,
-            )
+            .execute_child_waves(self.run, &calls, &self.call.id, self.depth + 1, scope)
             .await
     }
 
@@ -367,7 +486,18 @@ impl ToolContext<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::ToolScheduling;
+    #![expect(clippy::unwrap_used, reason = "panicking assertions fail the test")]
+
+    use std::collections::BTreeMap;
+
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    use super::{
+        ToolContext, ToolDefinition, ToolError, ToolExecutor, ToolExecutorImpl, ToolImpl,
+        ToolOutput, ToolRegistry, ToolScheduling,
+    };
+    use crate::agent::AgentError;
 
     #[test]
     fn resource_conflicts_are_symmetric_and_exclusive_is_conservative() {
@@ -395,5 +525,188 @@ mod tests {
         assert!(!write.conflicts(&independent));
         assert!(ToolScheduling::default().conflicts(&independent));
         assert!(independent.conflicts(&ToolScheduling::default()));
+    }
+
+    fn entry(name: &str) -> ToolDefinition {
+        ToolDefinition::builder()
+            .name(name)
+            .description("test tool")
+            .input_schema(json!({}))
+            .build()
+    }
+
+    struct Named {
+        name: &'static str,
+        metadata: BTreeMap<String, serde_json::Value>,
+    }
+
+    #[async_trait]
+    impl ToolImpl for Named {
+        type Args = serde_json::Value;
+        type Output = String;
+        type Error = std::convert::Infallible;
+
+        fn definition(&self) -> ToolDefinition {
+            entry(self.name)
+        }
+
+        fn metadata(&self) -> BTreeMap<String, serde_json::Value> {
+            self.metadata.clone()
+        }
+
+        async fn call(
+            &self,
+            _context: &ToolContext<'_>,
+            _args: Self::Args,
+        ) -> Result<String, Self::Error> {
+            Ok("ok".into())
+        }
+    }
+
+    struct ErasedNamed {
+        name: &'static str,
+        metadata: BTreeMap<String, serde_json::Value>,
+    }
+
+    #[async_trait]
+    impl ToolExecutorImpl for ErasedNamed {
+        fn definition(&self) -> ToolDefinition {
+            entry(self.name)
+        }
+
+        fn metadata(&self) -> BTreeMap<String, serde_json::Value> {
+            self.metadata.clone()
+        }
+
+        async fn execute(
+            &self,
+            _context: &ToolContext<'_>,
+            _input: serde_json::Value,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::builder().content("ok").build())
+        }
+    }
+
+    fn named(name: &'static str) -> Named {
+        Named {
+            name,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn metadata_defaults_to_empty_and_leaves_declarations_unchanged() {
+        let mut tools = ToolRegistry::default();
+        tools.register(named("typed")).unwrap();
+        tools
+            .register_executor(ToolExecutor::new(ErasedNamed {
+                name: "erased",
+                metadata: BTreeMap::new(),
+            }))
+            .unwrap();
+        tools.register(named("rich")).unwrap();
+        assert!(tools.entries().iter().all(|tool| tool.metadata.is_empty()));
+        let plain = {
+            let mut plain = ToolRegistry::default();
+            plain.register(named("typed")).unwrap();
+            plain
+                .register_executor(ToolExecutor::new(ErasedNamed {
+                    name: "erased",
+                    metadata: BTreeMap::new(),
+                }))
+                .unwrap();
+            plain.register(named("rich")).unwrap();
+            plain.definitions()
+        };
+        assert_eq!(tools.definitions(), plain);
+        assert_eq!(
+            tools
+                .entries()
+                .iter()
+                .map(|tool| tool.definition.clone())
+                .collect::<Vec<_>>(),
+            tools.definitions()
+        );
+        assert!(matches!(
+            tools.register_executor(ToolExecutor::new(ErasedNamed {
+                name: "",
+                metadata: BTreeMap::new(),
+            })),
+            Err(AgentError::EmptyToolName { .. })
+        ));
+    }
+
+    #[test]
+    fn registration_captures_metadata_and_sorts_entries_by_name() {
+        let mut tools = ToolRegistry::default();
+        let typed = BTreeMap::from([
+            ("app.callers".to_owned(), json!(["batch"])),
+            ("nested.keys".to_owned(), json!({"deep": {"list": [1, 2]}})),
+        ]);
+        tools
+            .register(Named {
+                name: "zeta",
+                metadata: typed.clone(),
+            })
+            .unwrap();
+        let erased = BTreeMap::from([("scope".to_owned(), json!("internal"))]);
+        tools
+            .register_executor(ToolExecutor::new(ErasedNamed {
+                name: "alpha",
+                metadata: erased.clone(),
+            }))
+            .unwrap();
+        let entries = tools.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|tool| tool.definition.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["alpha".to_owned(), "zeta".to_owned()]
+        );
+        assert_eq!(entries[0].metadata, erased);
+        assert_eq!(entries[1].metadata, typed);
+    }
+
+    #[test]
+    fn selections_freeze_membership_without_touching_the_registry() {
+        let callers = |name: &str| BTreeMap::from([("app.callers".to_owned(), json!([name]))]);
+        let mut tools = ToolRegistry::default();
+        tools
+            .register(Named {
+                name: "batch",
+                metadata: callers("batch"),
+            })
+            .unwrap();
+        tools
+            .register(Named {
+                name: "interactive",
+                metadata: callers("interactive"),
+            })
+            .unwrap();
+        let selection =
+            tools.selection(|tool| tool.metadata.get("app.callers") == Some(&json!(["batch"])));
+        assert!(selection.contains("batch"));
+        assert!(!selection.contains("interactive"));
+        assert!(!selection.contains("absent"));
+        let empty = tools.selection(|_| false);
+        let no_match = tools.selection(|tool| tool.metadata.contains_key("unrecognized"));
+        assert_eq!(empty, no_match);
+        assert!(!empty.contains("batch"));
+        let before = (tools.definitions(), tools.entries());
+        tools.selection(|tool| tool.definition.name == "interactive");
+        assert_eq!((tools.definitions(), tools.entries()), before);
+        assert_ne!(selection, empty);
+        let rebuilt = {
+            let mut rebuilt = ToolRegistry::default();
+            rebuilt
+                .register(Named {
+                    name: "batch",
+                    metadata: callers("batch"),
+                })
+                .unwrap();
+            rebuilt.selection(|tool| tool.metadata.get("app.callers") == Some(&json!(["batch"])))
+        };
+        assert_eq!(selection, rebuilt);
     }
 }

@@ -11,7 +11,7 @@ use super::{
     Agent, AgentConfig, AgentEvent, AgentLayer, Cancellation, RunContext,
     tool::{
         ToolCall, ToolContext, ToolError, ToolExecutor, ToolImpl, ToolOutput, ToolRegistry,
-        ToolSchedulingPolicy, TypedTool,
+        ToolSchedulingPolicy, ToolScope, TypedTool,
     },
 };
 use crate::{
@@ -136,7 +136,7 @@ impl ToolHarness {
             parent_call_id: None,
             agent: &self.agent,
             depth: 0,
-            visible: &visible,
+            scope: ToolScope::Request(&visible),
             scheduling,
             children: AtomicU64::default(),
             child_gate: Mutex::default(),

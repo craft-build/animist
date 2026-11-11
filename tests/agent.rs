@@ -16,7 +16,7 @@ use animist::{
         Recovery, RunContext, RunOptions, RunStatus, Section, StepAction, StepOutcome, StepRequest,
         tool::{
             IntoToolOutput, ToolCall, ToolContent, ToolContext, ToolDefinition, ToolError,
-            ToolImpl, ToolOutput, ToolRegistry,
+            ToolImpl, ToolOutput, ToolRegistry, ToolSelection,
         },
     },
     history::{ContentBlock, Message, MessageKind, Role, StoredMessage},
@@ -1271,6 +1271,13 @@ impl ToolImpl for Child {
 
 struct DenyEcho;
 
+struct Selector {
+    parallel: bool,
+    selection: ToolSelection,
+}
+
+struct DispatchIn(ToolSelection);
+
 #[async_trait]
 impl LayerImpl for DenyEcho {
     async fn pre_tool_exec(
@@ -1286,6 +1293,74 @@ impl LayerImpl for DenyEcho {
         } else {
             animist::agent::ToolDecision::Run
         })
+    }
+}
+
+#[async_trait]
+impl ToolImpl for Selector {
+    type Args = serde_json::Value;
+    type Output = ToolOutput;
+    type Error = AgentError;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::builder()
+            .name("selector")
+            .description("Dispatch a selected child")
+            .input_schema(json!({"type":"object"}))
+            .build()
+    }
+
+    fn metadata(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+        [("app.callers".to_owned(), json!("selected-dispatch"))].into()
+    }
+
+    async fn call(
+        &self,
+        context: &ToolContext<'_>,
+        _args: Self::Args,
+    ) -> Result<ToolOutput, AgentError> {
+        let call = ToolCall::builder()
+            .id("nested")
+            .name("echo")
+            .input(json!({"text":"nested"}))
+            .build();
+        if self.parallel {
+            let mut outputs = context.dispatch_all_in(vec![call], &self.selection).await?;
+            return Ok(outputs.remove(0));
+        }
+        context.dispatch_in(call, &self.selection).await
+    }
+}
+
+#[async_trait]
+impl ToolImpl for DispatchIn {
+    type Args = serde_json::Value;
+    type Output = ToolOutput;
+    type Error = AgentError;
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::builder()
+            .name("narrow")
+            .description("Dispatch through an application allowlist")
+            .input_schema(json!({"type":"object"}))
+            .build()
+    }
+
+    async fn call(
+        &self,
+        context: &ToolContext<'_>,
+        _args: Self::Args,
+    ) -> Result<ToolOutput, AgentError> {
+        context
+            .dispatch_in(
+                ToolCall::builder()
+                    .id("nested")
+                    .name("echo")
+                    .input(json!({"text":"nested"}))
+                    .build(),
+                &self.0,
+            )
+            .await
     }
 }
 
@@ -1548,6 +1623,147 @@ async fn hidden_tools_are_unavailable_to_model_and_child_calls() {
             .content
             .iter()
             .all(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
+    );
+    animist::protocol::validate_replay(&history, &[]).unwrap();
+}
+
+#[tokio::test]
+async fn hidden_selected_tools_execute_only_through_selected_dispatch() {
+    for parallel in [false, true] {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut tools = ToolRegistry::default();
+        tools.register(Child).unwrap();
+        tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
+        let selection = tools.selection(|entry| entry.definition.name == "echo");
+        assert!(selection.contains("echo"));
+        assert!(!selection.contains("child"));
+        tools
+            .register(Selector {
+                parallel,
+                selection,
+            })
+            .unwrap();
+        let metadata = tools
+            .entries()
+            .into_iter()
+            .find(|entry| entry.definition.name == "selector")
+            .unwrap()
+            .metadata;
+        assert_eq!(
+            metadata.get("app.callers"),
+            Some(&json!("selected-dispatch"))
+        );
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        vec![
+                            call("parent", "selector", json!({})),
+                            call("direct", "echo", json!({"text":"hidden"})),
+                        ],
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Arc::default(),
+            ))
+            .tools(tools)
+            .layers(AgentLayer::builder().layer(Layer::new(HideEcho)).build())
+            .build();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            agent.run(input(), RunOptions::default()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(report.status, RunStatus::Completed);
+        assert_eq!(report.stats.tool_calls, 2);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let history = agent.history().current().await;
+        assert!(
+            matches!(&history[2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == &"nested".into())
+        );
+        assert!(
+            matches!(&history[2].content[1], ContentBlock::ToolResult { content, is_error: true, .. } if content == &"Unknown tool: echo".into())
+        );
+        animist::protocol::validate_replay(&history, &[]).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn unselected_request_visible_tools_stay_rejected_by_selected_dispatch() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mut tools = ToolRegistry::default();
+    tools.register(Child).unwrap();
+    tools.register(Echo(std::sync::Arc::clone(&count))).unwrap();
+    let empty = tools.selection(|_| false);
+    tools.register(DispatchIn(empty)).unwrap();
+    assert_eq!(
+        tools
+            .entries()
+            .iter()
+            .map(|entry| entry.definition.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["child".to_owned(), "echo".to_owned(), "narrow".to_owned()]
+    );
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![
+                        call("parent", "child", json!({})),
+                        call("narrow", "narrow", json!({})),
+                    ],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Arc::default(),
+        ))
+        .tools(tools)
+        .build();
+    let report = agent.run(input(), RunOptions::default()).await.unwrap();
+    assert_eq!(report.stats.tool_calls, 3);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    let history = agent.history().current().await;
+    assert!(
+        matches!(&history[2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == &"nested".into())
+    );
+    assert!(
+        matches!(&history[2].content[1], ContentBlock::ToolResult { content, is_error: true, .. } if content == &"Unknown tool: echo".into())
+    );
+    animist::protocol::validate_replay(&history, &[]).unwrap();
+}
+
+#[tokio::test]
+async fn selected_names_missing_from_the_executing_registry_stay_unknown() {
+    let mut foreign = ToolRegistry::default();
+    foreign.register(Echo(Arc::default())).unwrap();
+    let foreign = foreign.selection(|entry| entry.definition.name == "echo");
+    let mut tools = ToolRegistry::default();
+    tools.register(DispatchIn(foreign)).unwrap();
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                response(
+                    vec![call("narrow", "narrow", json!({}))],
+                    StopReason::ToolUse,
+                ),
+                response(vec![text("done")], StopReason::EndTurn),
+            ],
+            false,
+            Arc::default(),
+        ))
+        .tools(tools)
+        .build();
+    let report = agent.run(input(), RunOptions::default()).await.unwrap();
+    assert_eq!(report.stats.tool_calls, 1);
+    let history = agent.history().current().await;
+    assert!(
+        matches!(&history[2].content[0], ContentBlock::ToolResult { content, is_error: true, .. } if content == &"Unknown tool: echo".into())
     );
     animist::protocol::validate_replay(&history, &[]).unwrap();
 }
@@ -2092,7 +2308,7 @@ async fn child_fanout_is_bounded_and_nonexclusive_parents_cannot_dispatch() {
     }
 }
 
-struct FanOutAll(Vec<ToolCall>);
+struct FanOutAll(Vec<ToolCall>, Option<ToolSelection>);
 
 #[async_trait]
 impl ToolImpl for FanOutAll {
@@ -2109,7 +2325,10 @@ impl ToolImpl for FanOutAll {
     }
 
     async fn call(&self, context: &ToolContext<'_>, _: Self::Args) -> Result<String, AgentError> {
-        let outputs = context.dispatch_all(self.0.clone()).await?;
+        let outputs = match &self.1 {
+            Some(selection) => context.dispatch_all_in(self.0.clone(), selection).await?,
+            None => context.dispatch_all(self.0.clone()).await?,
+        };
         Ok(outputs
             .iter()
             .map(|output| {
@@ -2159,116 +2378,128 @@ impl ToolImpl for Rendezvous {
 
 #[tokio::test]
 async fn concurrent_children_overlap_and_results_return_in_call_order() {
-    let barrier = Arc::new(tokio::sync::Barrier::new(2));
-    let mut tools = ToolRegistry::default();
-    tools.register(Rendezvous(Arc::clone(&barrier))).unwrap();
-    tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("rendezvous")
-                .input(json!("1"))
-                .build(),
-            ToolCall::builder()
-                .id("2")
-                .name("rendezvous")
-                .input(json!("2"))
-                .build(),
-        ]))
+    for selected in [false, true] {
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let mut tools = ToolRegistry::default();
+        tools.register(Rendezvous(Arc::clone(&barrier))).unwrap();
+        let selection = tools.selection(|_| true);
+        tools
+            .register(FanOutAll(
+                vec![
+                    ToolCall::builder()
+                        .id("1")
+                        .name("rendezvous")
+                        .input(json!("1"))
+                        .build(),
+                    ToolCall::builder()
+                        .id("2")
+                        .name("rendezvous")
+                        .input(json!("2"))
+                        .build(),
+                ],
+                selected.then_some(selection),
+            ))
+            .unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        vec![call("parent", "fanout_all", json!({}))],
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Arc::default(),
+            ))
+            .tools(tools)
+            .config(AgentConfig::builder().max_concurrent_tools(2_usize).build())
+            .build();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            agent.run(input(), RunOptions::default()),
+        )
+        .await
+        .expect("children must overlap for the barrier to release")
         .unwrap();
-    let agent = Agent::builder()
-        .model(model(
-            vec![
-                response(
-                    vec![call("parent", "fanout_all", json!({}))],
-                    StopReason::ToolUse,
-                ),
-                response(vec![text("done")], StopReason::EndTurn),
-            ],
-            false,
-            Arc::default(),
-        ))
-        .tools(tools)
-        .config(AgentConfig::builder().max_concurrent_tools(2_usize).build())
-        .build();
-    let report = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        agent.run(input(), RunOptions::default()),
-    )
-    .await
-    .expect("children must overlap for the barrier to release")
-    .unwrap();
-    assert_eq!(report.status, RunStatus::Completed);
-    assert!(
-        matches!(&agent.history().current().await[2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == &"1,2".into())
-    );
+        assert_eq!(report.status, RunStatus::Completed);
+        assert!(
+            matches!(&agent.history().current().await[2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == &"1,2".into())
+        );
+    }
 }
 
 #[tokio::test]
 async fn conflicting_children_serialize_in_call_order() {
-    let active = Arc::new(AtomicUsize::new(0));
-    let peak = Arc::new(AtomicUsize::new(0));
-    let finished = Arc::new(Mutex::new(Vec::new()));
-    let mut tools = ToolRegistry::default();
-    tools
-        .register(ScheduledTool {
-            active: Arc::clone(&active),
-            peak: Arc::clone(&peak),
-            finished: Arc::clone(&finished),
-            claims: animist::agent::tool::ToolScheduling::Resources {
-                reads: vec![],
-                writes: vec!["shared".into()],
-            },
-        })
+    for selected in [false, true] {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(Mutex::new(Vec::new()));
+        let mut tools = ToolRegistry::default();
+        tools
+            .register(ScheduledTool {
+                active: Arc::clone(&active),
+                peak: Arc::clone(&peak),
+                finished: Arc::clone(&finished),
+                claims: animist::agent::tool::ToolScheduling::Resources {
+                    reads: vec![],
+                    writes: vec!["shared".into()],
+                },
+            })
+            .unwrap();
+        let selection = tools.selection(|_| true);
+        tools
+            .register(FanOutAll(
+                vec![
+                    ToolCall::builder()
+                        .id("1")
+                        .name("scheduled")
+                        .input(json!(30))
+                        .build(),
+                    ToolCall::builder()
+                        .id("2")
+                        .name("scheduled")
+                        .input(json!(1))
+                        .build(),
+                    ToolCall::builder()
+                        .id("3")
+                        .name("scheduled")
+                        .input(json!(2))
+                        .build(),
+                ],
+                selected.then_some(selection),
+            ))
+            .unwrap();
+        let agent = Agent::builder()
+            .model(model(
+                vec![
+                    response(
+                        vec![call("parent", "fanout_all", json!({}))],
+                        StopReason::ToolUse,
+                    ),
+                    response(vec![text("done")], StopReason::EndTurn),
+                ],
+                false,
+                Arc::default(),
+            ))
+            .tools(tools)
+            .config(AgentConfig::builder().max_concurrent_tools(3_usize).build())
+            .build();
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            agent.run(input(), RunOptions::default()),
+        )
+        .await
+        .unwrap()
         .unwrap();
-    tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("scheduled")
-                .input(json!(30))
-                .build(),
-            ToolCall::builder()
-                .id("2")
-                .name("scheduled")
-                .input(json!(1))
-                .build(),
-            ToolCall::builder()
-                .id("3")
-                .name("scheduled")
-                .input(json!(2))
-                .build(),
-        ]))
-        .unwrap();
-    let agent = Agent::builder()
-        .model(model(
-            vec![
-                response(
-                    vec![call("parent", "fanout_all", json!({}))],
-                    StopReason::ToolUse,
-                ),
-                response(vec![text("done")], StopReason::EndTurn),
-            ],
-            false,
-            Arc::default(),
-        ))
-        .tools(tools)
-        .config(AgentConfig::builder().max_concurrent_tools(3_usize).build())
-        .build();
-    let report = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        agent.run(input(), RunOptions::default()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(report.status, RunStatus::Completed);
-    assert_eq!(peak.load(Ordering::SeqCst), 1);
-    assert_eq!(active.load(Ordering::SeqCst), 0);
-    assert_eq!(*finished.lock().await, vec![30_u64, 1, 2]);
-    assert!(
-        matches!(&agent.history().current().await[2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == &"30,1,2".into())
-    );
+        assert_eq!(report.status, RunStatus::Completed);
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(*finished.lock().await, vec![30_u64, 1, 2]);
+        assert!(
+            matches!(&agent.history().current().await[2].content[0], ContentBlock::ToolResult { content, is_error: false, .. } if content == &"30,1,2".into())
+        );
+    }
 }
 
 struct DenyChildTwo;
@@ -2296,23 +2527,26 @@ async fn a_denied_child_affects_only_itself() {
     let mut tools = ToolRegistry::default();
     tools.register(Rendezvous(Arc::clone(&barrier))).unwrap();
     tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("rendezvous")
-                .input(json!("1"))
-                .build(),
-            ToolCall::builder()
-                .id("2")
-                .name("rendezvous")
-                .input(json!("2"))
-                .build(),
-            ToolCall::builder()
-                .id("3")
-                .name("rendezvous")
-                .input(json!("3"))
-                .build(),
-        ]))
+        .register(FanOutAll(
+            vec![
+                ToolCall::builder()
+                    .id("1")
+                    .name("rendezvous")
+                    .input(json!("1"))
+                    .build(),
+                ToolCall::builder()
+                    .id("2")
+                    .name("rendezvous")
+                    .input(json!("2"))
+                    .build(),
+                ToolCall::builder()
+                    .id("3")
+                    .name("rendezvous")
+                    .input(json!("3"))
+                    .build(),
+            ],
+            None,
+        ))
         .unwrap();
     let agent = Agent::builder()
         .model(model(
@@ -2382,23 +2616,26 @@ async fn stop_from_one_child_drops_its_siblings_and_terminates() {
         })
         .unwrap();
     tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("scheduled")
-                .input(json!(60_000))
-                .build(),
-            ToolCall::builder()
-                .id("2")
-                .name("scheduled")
-                .input(json!(60_000))
-                .build(),
-            ToolCall::builder()
-                .id("3")
-                .name("scheduled")
-                .input(json!(60_000))
-                .build(),
-        ]))
+        .register(FanOutAll(
+            vec![
+                ToolCall::builder()
+                    .id("1")
+                    .name("scheduled")
+                    .input(json!(60_000))
+                    .build(),
+                ToolCall::builder()
+                    .id("2")
+                    .name("scheduled")
+                    .input(json!(60_000))
+                    .build(),
+                ToolCall::builder()
+                    .id("3")
+                    .name("scheduled")
+                    .input(json!(60_000))
+                    .build(),
+            ],
+            None,
+        ))
         .unwrap();
     let agent = Agent::builder()
         .model(model(
@@ -2451,18 +2688,21 @@ async fn cancelling_the_run_drops_children_without_orphan_work() {
         })
         .unwrap();
     tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("scheduled")
-                .input(json!(60_000))
-                .build(),
-            ToolCall::builder()
-                .id("2")
-                .name("scheduled")
-                .input(json!(60_000))
-                .build(),
-        ]))
+        .register(FanOutAll(
+            vec![
+                ToolCall::builder()
+                    .id("1")
+                    .name("scheduled")
+                    .input(json!(60_000))
+                    .build(),
+                ToolCall::builder()
+                    .id("2")
+                    .name("scheduled")
+                    .input(json!(60_000))
+                    .build(),
+            ],
+            None,
+        ))
         .unwrap();
     let agent = Agent::builder()
         .model(model(
@@ -2507,23 +2747,26 @@ async fn concurrent_child_dispatch_enforces_limits() {
     let mut tools = ToolRegistry::default();
     tools.register(Echo(Arc::clone(&count))).unwrap();
     tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("echo")
-                .input(json!({"text":"a"}))
-                .build(),
-            ToolCall::builder()
-                .id("2")
-                .name("echo")
-                .input(json!({"text":"b"}))
-                .build(),
-            ToolCall::builder()
-                .id("3")
-                .name("echo")
-                .input(json!({"text":"c"}))
-                .build(),
-        ]))
+        .register(FanOutAll(
+            vec![
+                ToolCall::builder()
+                    .id("1")
+                    .name("echo")
+                    .input(json!({"text":"a"}))
+                    .build(),
+                ToolCall::builder()
+                    .id("2")
+                    .name("echo")
+                    .input(json!({"text":"b"}))
+                    .build(),
+                ToolCall::builder()
+                    .id("3")
+                    .name("echo")
+                    .input(json!({"text":"c"}))
+                    .build(),
+            ],
+            None,
+        ))
         .unwrap();
     let agent = Agent::builder()
         .model(model(
@@ -2557,18 +2800,21 @@ async fn concurrent_child_dispatch_enforces_limits() {
     let mut tools = ToolRegistry::default();
     tools.register(Echo(Arc::clone(&count))).unwrap();
     tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("echo")
-                .input(json!({"text":"a"}))
-                .build(),
-            ToolCall::builder()
-                .id("2")
-                .name("echo")
-                .input(json!({"text":"b"}))
-                .build(),
-        ]))
+        .register(FanOutAll(
+            vec![
+                ToolCall::builder()
+                    .id("1")
+                    .name("echo")
+                    .input(json!({"text":"a"}))
+                    .build(),
+                ToolCall::builder()
+                    .id("2")
+                    .name("echo")
+                    .input(json!({"text":"b"}))
+                    .build(),
+            ],
+            None,
+        ))
         .unwrap();
     let agent = Agent::builder()
         .model(model(
@@ -2634,13 +2880,16 @@ async fn nested_concurrent_dispatch_is_rejected_and_serial_stays_available() {
     tools.register(NestedOrchestrator).unwrap();
     tools.register(Echo(Arc::clone(&count))).unwrap();
     tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("nested")
-                .name("nested_orchestrator")
-                .input(json!({}))
-                .build(),
-        ]))
+        .register(FanOutAll(
+            vec![
+                ToolCall::builder()
+                    .id("nested")
+                    .name("nested_orchestrator")
+                    .input(json!({}))
+                    .build(),
+            ],
+            None,
+        ))
         .unwrap();
     let agent = Agent::builder()
         .model(model(
@@ -2674,13 +2923,16 @@ async fn nonexclusive_parents_cannot_dispatch_children_concurrently() {
     let mut tools = ToolRegistry::default();
     tools.register(Echo(Arc::clone(&count))).unwrap();
     tools
-        .register(FanOutAll(vec![
-            ToolCall::builder()
-                .id("1")
-                .name("echo")
-                .input(json!({"text":"a"}))
-                .build(),
-        ]))
+        .register(FanOutAll(
+            vec![
+                ToolCall::builder()
+                    .id("1")
+                    .name("echo")
+                    .input(json!({"text":"a"}))
+                    .build(),
+            ],
+            None,
+        ))
         .unwrap();
     let agent = Agent::builder()
         .model(model(

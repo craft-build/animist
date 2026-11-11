@@ -137,6 +137,10 @@ validation. Business constraints belong in typed argument validation/tool execut
 `ToolExecutor` handle. Runtime-named tools such as MCP adapters can instead implement
 `ToolExecutorImpl` and use `register_executor`. Both paths freeze the declaration
 used for inference alongside the executable handle. Duplicate/empty names fail.
+Implementations may also return application-owned `metadata`; the registry
+captures it once at registration and `entries()` exposes each declaration
+alongside its metadata map. Animist never interprets metadata or sends it to
+providers.
 
 `ToolDefinition` re-exports the existing provider declaration, not an executable
 trait. Tool execution remains outside providers and protocols.
@@ -252,7 +256,9 @@ exclusive orchestration tool instead.
 including nested, denied, responded, unknown, and hidden calls. Budget/depth errors returned
 by `dispatch` and `dispatch_all` remain typed errors for the parent to handle.
 The final advertised declaration set of each inference attempt also gates every
-model and child call for that step. Registration alone does not grant visibility.
+model and child call for that step; an explicit `ToolSelection` passed to
+`dispatch_in`/`dispatch_all_in` is the sole child-call exception. Registration
+alone does not grant visibility.
 
 `tool_timeout_ms` defaults to no timeout and covers the executor future, including
 time it spends dispatching children, but not its outer authorization/result hooks.
@@ -301,6 +307,26 @@ or register executors; all current protocol adapters reject nonempty
 Anthropic Messages and OpenAI Responses support tool-result images; Chat
 Completions rejects them. UI presentation belongs in the consumer's event
 adapter or message display metadata, not in model-visible content.
+
+### Selected child dispatch
+
+`ToolRegistry::selection(predicate)` freezes the entries matching an
+application predicate into an immutable `ToolSelection`, a name allowlist
+whose only public operation is `contains`. The predicate runs once during
+construction over `entries()`; later registry changes do not alter an existing
+selection. `ToolContext::dispatch_in` and `dispatch_all_in` are the
+trusted-parent counterparts of `dispatch`/`dispatch_all`: they admit a child
+only when it is both registered with the executing agent and named by the
+selection. A selected tool executes even when hidden from the current request,
+while a registered, request-visible tool the selection omits returns the usual
+`Unknown tool` result, and a selected name missing from the registry does the
+same.
+
+Selections never change model or root admission: request visibility still comes
+from the advertised declaration set alone. A child dispatched through a
+selection inherits it, so its own ordinary `dispatch` calls stay within the
+selected names. Applications are responsible for selecting only intended tools;
+selection is an explicit application policy, not a capability Animist grants.
 
 ## Execution, history, and cancellation
 
