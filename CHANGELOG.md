@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/craft-build/animist/compare/v0.8.0...v0.8.1) - 2026-11-11
+
+### Added
+
+- *(agent)* add tool metadata and selected child dispatch
+
 ## [0.8.0](https://github.com/craft-build/animist/compare/v0.7.0...v0.8.0) - 2026-11-08
 
 ### Added
