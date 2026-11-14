@@ -1,5 +1,6 @@
 //! oMLX authentication, discovery, and Chat Completions policy.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use async_trait::async_trait;
@@ -15,7 +16,7 @@ use super::http::{default_client, ensure_success};
 use super::{
     Effort, EmbeddingModel, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse, Message,
     Model, ModelInfo, ProviderEvent, ProviderImpl, RequestOptions, Result, StreamResponse,
-    ThinkingConfig, Tool, error,
+    Thinking, ThinkingConfig, Tool, error,
 };
 use crate::protocol::{
     EmbeddingProtocol, Protocol, ProtocolInput,
@@ -107,6 +108,32 @@ impl Omlx {
         }
         ensure_success(request.send().await.context(error::TransportSnafu)?).await
     }
+
+    /// Per-model thinking metadata gathered from the oMLX status extension.
+    /// The query is best-effort: servers or proxies without the endpoint, and
+    /// malformed payloads, leave catalog metadata untouched.
+    async fn reported_thinking(&self) -> BTreeMap<String, Thinking> {
+        let Ok(response) = self.send(reqwest::Method::GET, "models/status", None).await else {
+            return BTreeMap::new();
+        };
+        let Ok(bytes) = crate::protocol::body::read_body(response).await else {
+            return BTreeMap::new();
+        };
+        let Ok(statuses) = serde_json::from_slice::<ModelStatuses>(&bytes) else {
+            return BTreeMap::new();
+        };
+        let mut reported = BTreeMap::new();
+        for model in statuses.models {
+            let Some(thinking) = model.reported_thinking() else {
+                continue;
+            };
+            if let Some(alias) = &model.model_alias {
+                reported.insert(alias.clone(), thinking.clone());
+            }
+            reported.insert(model.id, thinking);
+        }
+        reported
+    }
 }
 
 #[async_trait]
@@ -194,6 +221,11 @@ impl ProviderImpl for Omlx {
         let bytes = crate::protocol::body::read_body(response).await?;
         let models: Models =
             serde_json::from_slice(&bytes).context(error::DecodeOmlxModelsSnafu)?;
+        let reported = if models.data.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.reported_thinking().await
+        };
         Ok(models
             .data
             .into_iter()
@@ -205,6 +237,9 @@ impl ProviderImpl for Omlx {
                     .and_then(|catalog| catalog.models.get(&model.id))
                     .map(|model| model.info.clone())
                     .unwrap_or_default();
+                if let Some(thinking) = reported.get(&model.id) {
+                    info.features.thinking = thinking.clone();
+                }
                 info.ids = vec![model.id];
                 if let Some(context_window) = model.max_model_len {
                     info.config.context_window = Some(context_window.get());
@@ -270,4 +305,60 @@ struct Models {
 struct SourceModel {
     id: String,
     max_model_len: Option<NonZeroU32>,
+}
+
+/// `GET /v1/models/status` payload; some oMLX builds key the list `data`.
+#[derive(crate::Struct!, Deserialize)]
+struct ModelStatuses {
+    #[serde(default, alias = "data")]
+    models: Vec<SourceStatusModel>,
+}
+
+#[derive(crate::Struct!, Deserialize)]
+struct SourceStatusModel {
+    id: String,
+    #[serde(default)]
+    model_alias: Option<String>,
+    /// Chat reasoning slider stops, e.g. `["off", "low", "high"]`.
+    #[serde(default)]
+    reasoning_levels: Option<Vec<String>>,
+}
+
+impl SourceStatusModel {
+    /// Maps reported slider stops onto catalog thinking metadata; an absent
+    /// field keeps catalog metadata instead of clearing it.
+    fn reported_thinking(&self) -> Option<Thinking> {
+        let levels = self.reasoning_levels.as_ref()?;
+        let mut supported = false;
+        let mut efforts = Vec::new();
+        for level in levels {
+            let effort = match level.as_str() {
+                "off" => {
+                    supported = true;
+                    None
+                }
+                "on" | "auto" => Some(Effort::Adaptive),
+                "minimal" => Some(Effort::Minimal),
+                "low" => Some(Effort::Low),
+                "medium" => Some(Effort::Medium),
+                "high" => Some(Effort::High),
+                "xhigh" => Some(Effort::XHigh),
+                "max" => Some(Effort::Max),
+                _ => None,
+            };
+            supported |= effort.is_some();
+            if let Some(effort) = effort
+                && !efforts.contains(&effort)
+            {
+                efforts.push(effort);
+            }
+        }
+        Some(
+            Thinking::builder()
+                .supported(supported)
+                .required(false)
+                .efforts(efforts)
+                .build(),
+        )
+    }
 }

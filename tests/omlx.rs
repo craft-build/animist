@@ -27,13 +27,22 @@ async fn server(
     status: u16,
     bodies: Vec<&str>,
 ) -> (String, JoinHandle<Vec<(String, Option<Value>)>>) {
+    server_responses(bodies.into_iter().map(|body| (status, body)).collect()).await
+}
+
+async fn server_responses(
+    responses: Vec<(u16, &str)>,
+) -> (String, JoinHandle<Vec<(String, Option<Value>)>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/prefix/v1/", listener.local_addr().unwrap());
-    let bodies = bodies.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    let responses = responses
+        .into_iter()
+        .map(|(status, body)| (status, body.to_owned()))
+        .collect::<Vec<_>>();
     let task = tokio::spawn(async move {
         timeout(Duration::from_secs(5), async {
             let mut requests = Vec::new();
-            for body in bodies {
+            for (status, body) in responses {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 loop {
@@ -313,6 +322,71 @@ async fn discovery_keeps_profile_ids_and_prefers_server_context_windows() {
     let requests = task.await.unwrap();
     assert!(requests[0].0.starts_with("get /prefix/v1/models "));
     assert!(requests[0].1.is_none());
+}
+
+#[tokio::test]
+async fn discovery_enriches_reasoning_levels_from_server_status() {
+    let models = r#"{"data":[{"id":"local-model:thinking","max_model_len":32768},{"id":"alias-model"},{"id":"plain"},{"id":"unmatched"}]}"#;
+    let status = r#"{"models":[
+        {"id":"physical-model","model_alias":"alias-model","reasoning_levels":["off","low","high"]},
+        {"id":"local-model:thinking","reasoning_levels":["on"]},
+        {"id":"plain","reasoning_levels":[]}
+    ]}"#;
+    let (url, task) = server_responses(vec![(200, models), (200, status)]).await;
+    let mut info = model().info;
+    info.features.thinking.efforts = vec![Effort::Low];
+    let mut catalog = ProviderCatalog::default();
+    for id in ["plain", "unmatched"] {
+        catalog.models.insert(
+            id.into(),
+            CatalogModel::builder()
+                .name(id)
+                .info(info.clone())
+                .metadata(json!({}))
+                .build(),
+        );
+    }
+    let provider = Provider::new(
+        Omlx::new(OmlxConfig::builder().base_url(url).catalog(catalog).build()).unwrap(),
+    );
+    let discovered = provider.list_models().await.unwrap();
+    assert_eq!(discovered.len(), 4);
+    assert_eq!(discovered[0].ids, ["local-model:thinking"]);
+    assert!(discovered[0].features.thinking.supported);
+    assert_eq!(discovered[0].features.thinking.efforts, [Effort::Adaptive]);
+    assert_eq!(discovered[1].ids, ["alias-model"]);
+    assert!(discovered[1].features.thinking.supported);
+    assert_eq!(
+        discovered[1].features.thinking.efforts,
+        [Effort::Low, Effort::High]
+    );
+    assert_eq!(discovered[2].ids, ["plain"]);
+    assert!(!discovered[2].features.thinking.supported);
+    assert_eq!(
+        discovered[2].features.thinking.efforts,
+        Vec::<Effort>::new()
+    );
+    assert!(discovered[3].features.thinking.supported);
+    assert_eq!(discovered[3].features.thinking.efforts, [Effort::Low]);
+    let requests = task.await.unwrap();
+    assert!(requests[1].0.starts_with("get /prefix/v1/models/status "));
+    assert!(requests[1].1.is_none());
+}
+
+#[tokio::test]
+async fn discovery_ignores_absent_or_malformed_status_endpoints() {
+    let models = r#"{"data":[{"id":"local-model:thinking"}]}"#;
+    for response in [(404, r#"{"error":"not found"}"#), (200, "not-json")] {
+        let (url, task) = server_responses(vec![(200, models), response]).await;
+        let discovered = provider(url).list_models().await.unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].features.thinking.supported);
+        assert_eq!(
+            discovered[0].features.thinking.efforts,
+            Vec::<Effort>::new()
+        );
+        task.await.unwrap();
+    }
 }
 
 #[tokio::test]

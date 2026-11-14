@@ -43,10 +43,20 @@ window because it describes the effective serving limit. Missing or null values
 retain catalog metadata or remain unknown. Invalid or out-of-range context
 windows return a typed decoding error.
 
-Discovery does not infer thinking support, efforts, model tiers, or prices from
-names. Configure model metadata or overrides to advertise thinking support before
-requesting a budget or explicit effort. Missing prices are not evidence of free
-inference.
+When the listing is nonempty, discovery also queries the oMLX extension
+`GET /v1/models/status` and matches each listed ID against status entries by
+`id` and `model_alias`. A matched entry's `reasoning_levels` replaces catalog
+thinking metadata: `"off"` and recognized efforts (`"on"`, `"auto"`,
+`"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`) advertise
+thinking support, and the recognized levels become the accepted efforts.
+Configure levels through oMLX per-model settings and exposed profiles to
+advertise them here. `required` thinking is never inferred from the levels
+shape.
+
+The status query is best-effort: servers or proxies without the endpoint, and
+malformed payloads, leave catalog or default metadata untouched and never fail
+discovery. Discovery does not infer model tiers or prices from names, and
+missing prices are not evidence of free inference.
 
 ## Thinking and request policy
 
