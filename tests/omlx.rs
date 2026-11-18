@@ -325,12 +325,12 @@ async fn discovery_keeps_profile_ids_and_prefers_server_context_windows() {
 }
 
 #[tokio::test]
-async fn discovery_enriches_reasoning_levels_from_server_status() {
+async fn discovery_enriches_reasoning_efforts_from_server_status() {
     let models = r#"{"data":[{"id":"local-model:thinking","max_model_len":32768},{"id":"alias-model"},{"id":"plain"},{"id":"unmatched"}]}"#;
     let status = r#"{"models":[
-        {"id":"physical-model","model_alias":"alias-model","reasoning_levels":["off","low","high"]},
-        {"id":"local-model:thinking","reasoning_levels":["on"]},
-        {"id":"plain","reasoning_levels":[]}
+        {"id":"physical-model","model_alias":"alias-model","reasoning_efforts":["off","low","high"]},
+        {"id":"local-model:thinking","reasoning_efforts":["on"]},
+        {"id":"plain","reasoning_efforts":[]}
     ]}"#;
     let (url, task) = server_responses(vec![(200, models), (200, status)]).await;
     let mut info = model().info;

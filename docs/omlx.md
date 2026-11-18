@@ -45,7 +45,7 @@ windows return a typed decoding error.
 
 When the listing is nonempty, discovery also queries the oMLX extension
 `GET /v1/models/status` and matches each listed ID against status entries by
-`id` and `model_alias`. A matched entry's `reasoning_levels` replaces catalog
+`id` and `model_alias`. A matched entry's `reasoning_efforts` replaces catalog
 thinking metadata: `"off"` and recognized efforts (`"on"`, `"auto"`,
 `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`) advertise
 thinking support, and the recognized levels become the accepted efforts.

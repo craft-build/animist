@@ -319,16 +319,16 @@ struct SourceStatusModel {
     id: String,
     #[serde(default)]
     model_alias: Option<String>,
-    /// Chat reasoning slider stops, e.g. `["off", "low", "high"]`.
+    /// Accepted chat reasoning efforts, e.g. `["low", "medium", "xhigh"]`.
     #[serde(default)]
-    reasoning_levels: Option<Vec<String>>,
+    reasoning_efforts: Option<Vec<String>>,
 }
 
 impl SourceStatusModel {
-    /// Maps reported slider stops onto catalog thinking metadata; an absent
-    /// field keeps catalog metadata instead of clearing it.
+    /// Maps reported reasoning efforts onto catalog thinking metadata; an
+    /// absent field keeps catalog metadata instead of clearing it.
     fn reported_thinking(&self) -> Option<Thinking> {
-        let levels = self.reasoning_levels.as_ref()?;
+        let levels = self.reasoning_efforts.as_ref()?;
         let mut supported = false;
         let mut efforts = Vec::new();
         for level in levels {
