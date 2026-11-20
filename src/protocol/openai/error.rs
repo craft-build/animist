@@ -63,14 +63,20 @@ pub enum OpenAIProtocolError {
     DecodeEvent { source: serde_json::Error },
     #[snafu(display("Invalid Chat Completions chunk: {source}"))]
     DecodeChunk { source: serde_json::Error },
-    #[snafu(display("Invalid arguments for tool call {id}: {source}"))]
+    #[snafu(display(
+        "Invalid arguments for tool call {id}: {source} (raw arguments: {arguments})"
+    ))]
     DecodeToolArguments {
         id: String,
         source: serde_json::Error,
+        arguments: String,
     },
-    #[snafu(display("Arguments for tool call {id} are not a JSON object"))]
+    #[snafu(display(
+        "Arguments for tool call {id} are not a JSON object (raw arguments: {arguments})"
+    ))]
     InvalidToolInput {
         id: String,
+        arguments: String,
         backtrace: snafu::Backtrace,
     },
     #[snafu(display("Invalid reasoning signature JSON: {source}"))]
@@ -152,13 +158,15 @@ pub enum OpenAIProtocolError {
         id: String,
         backtrace: snafu::Backtrace,
     },
-    #[snafu(display("OpenAI returned an API error: {error}"))]
+    #[snafu(display("OpenAI returned an API error (HTTP {status}): {error}"))]
     Api {
+        status: u16,
         error: Value,
         backtrace: snafu::Backtrace,
     },
-    #[snafu(display("OpenAI response failed: {error}"))]
+    #[snafu(display("OpenAI response failed (HTTP {status}): {error}"))]
     ResponseFailed {
+        status: u16,
         error: Value,
         backtrace: snafu::Backtrace,
     },

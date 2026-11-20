@@ -732,3 +732,44 @@ async fn converse_maps_known_stop_reasons_and_rejects_missing_usage_or_trailing_
         server.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn converse_malformed_tool_input_preserves_the_raw_fragment() {
+    for (fragment, not_object) in [("[1]", true), ("{\"x\":", false)] {
+        let body = wire::fixture(
+            &json!([
+                {"event":"messageStart","payload":{"role":"assistant"}},
+                {"event":"contentBlockStart","payload":{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"a","name":"lookup"}}}},
+                {"event":"contentBlockDelta","payload":{"contentBlockIndex":0,"delta":{"toolUse":{"input":fragment}}}},
+                {"event":"contentBlockStop","payload":{"contentBlockIndex":0}},
+                {"event":"messageStop","payload":{"stopReason":"tool_use"}},
+                {"event":"metadata","payload":{"usage":{"inputTokens":10,"outputTokens":4,"totalTokens":14}}}
+            ])
+            .to_string(),
+        );
+        let (response, server) = response(body, false).await;
+        let (tx, _rx) = flume::unbounded();
+        let error = Converse.assemble(response, &tx).await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                ProtocolError::Bedrock {
+                    source: BedrockProtocolError::InvalidToolInput { id, arguments, .. }
+                } if id == "a" && arguments == fragment
+            ) || matches!(
+                &error,
+                ProtocolError::Bedrock {
+                    source: BedrockProtocolError::DecodeToolInput { id, arguments, .. }
+                } if id == "a" && arguments == fragment
+            ),
+            "unexpected error for {fragment}: {error:?}"
+        );
+        let provider_error = animist::provider::ProviderError::Protocol { source: error };
+        let classified = provider_error
+            .malformed_tool_arguments()
+            .expect("malformed tool input classifies");
+        assert_eq!((classified.id, classified.arguments), ("a", fragment));
+        assert_eq!(classified.reason == "not a JSON object", not_object);
+        server.await.unwrap();
+    }
+}

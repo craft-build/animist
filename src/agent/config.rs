@@ -14,6 +14,10 @@ pub struct AgentConfig {
     /// Maximum layer-requested inference retries per run.
     #[builder(default = 0_u32)]
     pub max_retries: u32,
+    /// Feedback retries for model-authored malformed tool arguments;
+    /// independent of `max_retries`.
+    #[builder(default = 2_u32)]
+    pub max_tool_argument_feedback: u32,
     /// Maximum tool dispatch nesting depth.
     #[builder(default = 8_u32)]
     pub max_tool_depth: u32,

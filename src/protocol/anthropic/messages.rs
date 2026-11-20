@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use bon::Builder;
 use flume::Sender;
 use serde_json::Value;
-use snafu::{OptionExt, ResultExt, ensure};
+use snafu::{IntoError, OptionExt, ResultExt, ensure};
 
 use super::AnthropicOptions;
 use super::error::{
@@ -144,7 +144,13 @@ impl Protocol for Messages {
                         input,
                         thought_signature: None,
                     } if message.role == Role::Assistant => {
-                        ensure!(input.is_object(), InvalidToolInputSnafu { id });
+                        ensure!(
+                            input.is_object(),
+                            InvalidToolInputSnafu {
+                                id,
+                                arguments: input.to_string(),
+                            }
+                        );
                         InputBlock::ToolUse {
                             id: id.clone(),
                             name: name.clone(),
@@ -230,6 +236,7 @@ impl Protocol for Messages {
         response: Self::Response,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse> {
+        let status = response.status().as_u16();
         let mut events = Events::new(response);
         let mut blocks: Vec<BlockState> = Vec::new();
         let mut completed = 0;
@@ -323,7 +330,13 @@ impl Protocol for Messages {
                             ContentBlock::RedactedThinking { data }
                         }
                         StartBlock::ToolUse { id, name, input } => {
-                            ensure!(input.is_object(), InvalidToolInputSnafu { id: &id });
+                            ensure!(
+                                input.is_object(),
+                                InvalidToolInputSnafu {
+                                    id: &id,
+                                    arguments: input.to_string(),
+                                }
+                            );
                             event_tx
                                 .send_async(ProviderEvent::ToolUseStart {
                                     id: id.clone(),
@@ -438,9 +451,24 @@ impl Protocol for Messages {
                     if let ContentBlock::ToolUse { id, input, .. } = &mut block.content
                         && let Some(arguments) = block.partial_json.take()
                     {
-                        *input = serde_json::from_str(&arguments)
-                            .context(DecodeToolArgumentsSnafu { id: &*id })?;
-                        ensure!(input.is_object(), InvalidToolInputSnafu { id: &*id });
+                        *input = match serde_json::from_str(&arguments) {
+                            Ok(input) => input,
+                            Err(source) => {
+                                return Err(DecodeToolArgumentsSnafu {
+                                    id: id.clone(),
+                                    arguments,
+                                }
+                                .into_error(source)
+                                .into());
+                            }
+                        };
+                        ensure!(
+                            input.is_object(),
+                            InvalidToolInputSnafu {
+                                id: id.clone(),
+                                arguments,
+                            }
+                        );
                     }
                     if let ContentBlock::Thinking { signature, .. } = &block.content {
                         ensure!(
@@ -531,7 +559,7 @@ impl Protocol for Messages {
                         .input_transformations(Vec::new())
                         .build());
                 }
-                Event::Error { error } => return Err(ApiSnafu { error }.build().into()),
+                Event::Error { error } => return Err(ApiSnafu { status, error }.build().into()),
                 Event::Ping | Event::Unknown => {}
             }
         }

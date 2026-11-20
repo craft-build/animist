@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use flume::Sender;
 use serde::Deserialize;
 use serde_json::Value;
-use snafu::{OptionExt, ResultExt, ensure};
+use snafu::{IntoError, OptionExt, ResultExt, ensure};
 
 use super::OpenAiOptions;
 use super::error::{
@@ -206,6 +206,7 @@ impl Protocol for Responses {
         response: Self::Response,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse> {
+        let status = response.status().as_u16();
         let mut events = Events::new(response);
         let mut calls = BTreeMap::new();
         let mut completed_items = BTreeMap::new();
@@ -219,6 +220,7 @@ impl Protocol for Responses {
             let value: Value = serde_json::from_str(&data).context(DecodeEventSnafu)?;
             if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
                 return Err(ApiSnafu {
+                    status,
                     error: error.clone(),
                 }
                 .build()
@@ -333,17 +335,25 @@ impl Protocol for Responses {
                             .context(EventReceiverSnafu)?;
                     }
                     return Err(ResponseFailedSnafu {
+                        status,
                         error: response.error.unwrap_or_default(),
                     }
                     .build()
                     .into());
                 }
-                StreamEvent::Error => return Err(ApiSnafu { error: value }.build().into()),
+                StreamEvent::Error => {
+                    return Err(ApiSnafu {
+                        status,
+                        error: value,
+                    }
+                    .build()
+                    .into());
+                }
                 StreamEvent::Unknown => {}
             }
         };
         if let Some(error) = response.error.filter(|error| !error.is_null()) {
-            return Err(ApiSnafu { error }.build().into());
+            return Err(ApiSnafu { status, error }.build().into());
         }
         let mut blocks = Vec::new();
         let mut checkpoint_prefix = !checkpoint_blocked;
@@ -456,10 +466,19 @@ impl Responses {
                 let input = if arguments.is_empty() {
                     Value::Object(serde_json::Map::new())
                 } else {
-                    serde_json::from_str(&arguments)
-                        .context(DecodeToolArgumentsSnafu { id: &id })?
+                    match serde_json::from_str(&arguments) {
+                        Ok(input) => input,
+                        Err(source) => {
+                            return Err(DecodeToolArgumentsSnafu { id, arguments }
+                                .into_error(source)
+                                .into());
+                        }
+                    }
                 };
-                ensure!(input.is_object(), InvalidToolInputSnafu { id: &id });
+                ensure!(
+                    input.is_object(),
+                    InvalidToolInputSnafu { id: &id, arguments }
+                );
                 blocks.push(ContentBlock::ToolUse {
                     id,
                     name,

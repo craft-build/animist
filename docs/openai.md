@@ -97,7 +97,11 @@ conversion, not an automatic loss of reasoning.
 Chat Completions cannot replay Responses reasoning signatures. Unsupported
 signed/redacted content, refusals, provider errors, malformed JSON, and
 prematurely terminated streams return errors rather than silently losing data.
-Completed tool arguments must be valid JSON, including when output is limited.
+In-stream `{"error": …}` payloads, `response.failed`, and terminal
+`response.error` entries keep their JSON body and the stream response's HTTP
+status (`Api`/`ResponseFailed`), surfaced through `ProviderError::status()`.
+Completed tool arguments must be valid JSON, including when output is limited;
+decode failures retain the exact raw fragment for feedback.
 Built-in OpenAI tools, audio, video, and structured-output configuration are not
 exposed by the current shared provider API.
 

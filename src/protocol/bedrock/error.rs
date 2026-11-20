@@ -87,9 +87,10 @@ pub enum BedrockProtocolError {
     MissingReplaySignature { backtrace: snafu::Backtrace },
     #[snafu(display("Converse cannot represent tool activation metadata"))]
     UnsupportedLoadedTools { backtrace: snafu::Backtrace },
-    #[snafu(display("Converse tool {id} input must be an object"))]
+    #[snafu(display("Converse tool {id} input must be an object (raw arguments: {arguments})"))]
     InvalidToolInput {
         id: String,
+        arguments: String,
         backtrace: snafu::Backtrace,
     },
     #[snafu(display("Converse requires inline images, not remote URLs"))]
@@ -140,10 +141,13 @@ pub enum BedrockProtocolError {
         id: String,
         backtrace: snafu::Backtrace,
     },
-    #[snafu(display("Failed to decode Converse tool {id} input: {source}"))]
+    #[snafu(display(
+        "Failed to decode Converse tool {id} input: {source} (raw arguments: {arguments})"
+    ))]
     DecodeToolInput {
         id: String,
         source: serde_json::Error,
+        arguments: String,
     },
     #[snafu(display("Converse block {index} reasoning has no signature"))]
     MissingSignature {

@@ -1,5 +1,9 @@
 use snafu::Snafu;
 
+use crate::protocol::{
+    ProtocolError, anthropic::AnthropicProtocolError, openai::OpenAIProtocolError,
+};
+
 /// Failures raised by provider transports, credentials, and model policy.
 #[derive(Snafu, Debug)]
 #[snafu(visibility(pub(crate)))]
@@ -134,4 +138,116 @@ pub enum ProviderError {
     },
     #[snafu(display("Invalid oMLX model listing: {source}"))]
     DecodeOmlxModels { source: serde_json::Error },
+}
+
+/// Model-authored malformed tool-call arguments, recoverable by feeding
+/// the failure back to the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MalformedToolArguments<'a> {
+    pub id: &'a str,
+    pub arguments: &'a str,
+    /// Rendered parse failure (serde Display, or "not a JSON object").
+    pub reason: String,
+}
+
+impl ProviderError {
+    /// HTTP status carried by this failure: transport `Http` failures,
+    /// Bedrock pre-stream HTTP failures, and OpenAI/Anthropic in-stream API
+    /// errors; `None` otherwise.
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            Self::Http { status, .. }
+            | Self::Protocol {
+                source:
+                    ProtocolError::OpenAI {
+                        source:
+                            OpenAIProtocolError::Api { status, .. }
+                            | OpenAIProtocolError::ResponseFailed { status, .. },
+                    }
+                    | ProtocolError::Anthropic {
+                        source: AnthropicProtocolError::Api { status, .. },
+                    },
+            } => Some(*status),
+            #[cfg(feature = "bedrock")]
+            Self::Bedrock {
+                source: crate::provider::bedrock::BedrockError::Http { status, .. },
+            } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// Structured view when this failure is model-authored malformed
+    /// tool-call arguments; `None` for every other failure.
+    pub fn malformed_tool_arguments(&self) -> Option<MalformedToolArguments<'_>> {
+        let Self::Protocol { source } = self else {
+            return None;
+        };
+        match source {
+            ProtocolError::OpenAI { source } => match source {
+                OpenAIProtocolError::DecodeToolArguments {
+                    id,
+                    source,
+                    arguments,
+                } => Some(MalformedToolArguments {
+                    id,
+                    arguments,
+                    reason: source.to_string(),
+                }),
+                OpenAIProtocolError::InvalidToolInput { id, arguments, .. } => {
+                    Some(MalformedToolArguments {
+                        id,
+                        arguments,
+                        reason: "not a JSON object".into(),
+                    })
+                }
+                _ => None,
+            },
+            ProtocolError::Anthropic { source } => match source {
+                AnthropicProtocolError::DecodeToolArguments {
+                    id,
+                    source,
+                    arguments,
+                } => Some(MalformedToolArguments {
+                    id,
+                    arguments,
+                    reason: source.to_string(),
+                }),
+                AnthropicProtocolError::InvalidToolInput { id, arguments, .. } => {
+                    Some(MalformedToolArguments {
+                        id,
+                        arguments,
+                        reason: "not a JSON object".into(),
+                    })
+                }
+                _ => None,
+            },
+            #[cfg(feature = "bedrock")]
+            ProtocolError::Bedrock {
+                source:
+                    crate::protocol::bedrock::BedrockProtocolError::DecodeToolInput {
+                        id,
+                        source,
+                        arguments,
+                    },
+            } => Some(MalformedToolArguments {
+                id,
+                arguments,
+                reason: source.to_string(),
+            }),
+            #[cfg(feature = "bedrock")]
+            ProtocolError::Bedrock {
+                source:
+                    crate::protocol::bedrock::BedrockProtocolError::InvalidToolInput {
+                        id,
+                        arguments,
+                        ..
+                    },
+            } => Some(MalformedToolArguments {
+                id,
+                arguments,
+                reason: "not a JSON object".into(),
+            }),
+            _ => None,
+        }
+    }
 }

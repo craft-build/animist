@@ -1098,11 +1098,13 @@ async fn http_errors_preserve_request_ids_types_and_raw_bodies_without_redirects
             )
             .await
             .unwrap_err();
+        let provider_status = error.status();
         assert!(
             matches!(error, ProviderError::Bedrock { source:BedrockError::Http {
             status:actual, request_id:Some(id), error_type:Some(kind), body:actual_body, ..
         }} if actual == status && id == "request-123" && kind == "ExampleException" && actual_body == body)
         );
+        assert_eq!(provider_status, Some(status));
         assert_eq!(task.await.unwrap().len(), 1);
     }
 }
@@ -1149,6 +1151,7 @@ async fn stream_failures_do_not_restart_inference_after_events_are_emitted() {
             )
             .await
             .unwrap_err();
+        let provider_status = error.status();
         match (protocol, error) {
             (
                 Protocol::ChatCompletions,
@@ -1164,10 +1167,14 @@ async fn stream_failures_do_not_restart_inference_after_events_are_emitted() {
                 ProviderError::Protocol {
                     source:
                         ProtocolError::Anthropic {
-                            source: AnthropicProtocolError::Api { error, .. },
+                            source: AnthropicProtocolError::Api { status, error, .. },
                         },
                 },
-            ) => assert_eq!(error["type"], "overloaded_error"),
+            ) => {
+                assert_eq!(status, 200);
+                assert_eq!(error["type"], "overloaded_error");
+                assert_eq!(provider_status, Some(200));
+            }
             (_, error) => panic!("unexpected error: {error:?}"),
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -1490,4 +1497,87 @@ async fn dropping_the_future_cancels_the_signed_http_exchange() {
         .await
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn compatibility_surfaces_carry_status_and_raw_tool_arguments() {
+    for (protocol, body, expected) in [
+        (
+            Protocol::ChatCompletions,
+            "data: {\"error\":{\"message\":\"try again\"}}\n\n".to_owned(),
+            "api",
+        ),
+        (
+            Protocol::ChatCompletions,
+            concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\"}}]}}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+                "data: [DONE]\n\n"
+            )
+            .to_owned(),
+            "arguments",
+        ),
+        (
+            Protocol::Responses,
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"failed\"}}}\n\n".to_owned(),
+            "failed",
+        ),
+    ] {
+        let (url, task) = server(vec![
+            Reply::builder()
+                .status(200_u16)
+                .body(body.as_bytes())
+                .build(),
+        ])
+        .await;
+        let provider = Bedrock::from_sdk_config(
+            BedrockConfig::builder()
+                .endpoint_url(url)
+                .protocol(protocol.clone())
+                .build(),
+            &static_sdk(),
+        )
+        .unwrap();
+        let (tx, _rx) = flume::unbounded();
+        let error = provider
+            .stream_message(&model(), &messages(), "", &[], &tx, RequestOptions::default())
+            .await
+            .unwrap_err();
+        match (expected, error) {
+            (
+                "api",
+                ProviderError::Protocol {
+                    source:
+                        ProtocolError::OpenAI {
+                            source: OpenAIProtocolError::Api { status: 200, .. },
+                        },
+                },
+            )
+            | (
+                "failed",
+                ProviderError::Protocol {
+                    source:
+                        ProtocolError::OpenAI {
+                            source: OpenAIProtocolError::ResponseFailed { status: 200, .. },
+                        },
+                },
+            ) => {}
+            (
+                "arguments",
+                ProviderError::Protocol {
+                    source:
+                        ProtocolError::OpenAI {
+                            source:
+                                OpenAIProtocolError::DecodeToolArguments {
+                                    id,
+                                    arguments,
+                                    ..
+                                },
+                        },
+                },
+            ) => assert_eq!((id.as_str(), arguments.as_str()), ("call", "{")),
+            (_, error) => panic!("unexpected {expected} error: {error:?}"),
+        }
+        task.await.unwrap();
+    }
 }

@@ -843,6 +843,16 @@ async fn invalid_stream_transitions_have_specific_protocol_errors() {
             },
         ),
         (
+            vec![
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"f","input":"x"}}),
+            ],
+            AnthropicProtocolError::InvalidToolInput {
+                id: "call".into(),
+                arguments: "\"x\"".into(),
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
+        ),
+        (
             finish("future_reason"),
             AnthropicProtocolError::UnsupportedStopReason {
                 reason: "future_reason".into(),
@@ -906,7 +916,12 @@ async fn malformed_tool_json_preserves_call_context_and_source() {
     let ProviderError::Protocol {
         source:
             ProtocolError::Anthropic {
-                source: AnthropicProtocolError::DecodeToolArguments { id, source },
+                source:
+                    AnthropicProtocolError::DecodeToolArguments {
+                        id,
+                        source,
+                        arguments,
+                    },
             },
     } = error
     else {
@@ -914,6 +929,7 @@ async fn malformed_tool_json_preserves_call_context_and_source() {
     };
     assert_eq!(id, "call-a");
     assert!(source.is_eof());
+    assert_eq!(arguments, "{");
     task.await.unwrap();
 }
 
@@ -938,10 +954,11 @@ async fn api_failures_preserve_payloads_and_preceding_events() {
         )
         .await
         .unwrap_err();
+    assert_eq!(error.status(), Some(200));
     assert!(matches!(error, ProviderError::Protocol {
-        source: ProtocolError::Anthropic { source: AnthropicProtocolError::Api { error ,
+        source: ProtocolError::Anthropic { source: AnthropicProtocolError::Api { status, error ,
         ..} }
-    } if error == payload));
+    } if error == payload && status == 200));
     assert_eq!(
         rx.try_iter()
             .find(|event| matches!(event, ProviderEvent::TextDelta { .. }))

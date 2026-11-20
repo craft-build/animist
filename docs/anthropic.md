@@ -80,14 +80,16 @@ identifiers survive assembly and replay. Thinking replay requires a nonempty
 signature. Signatures must come from the same protocol; they are not portable
 across vendors. Tool input is assembled from partial JSON and must finish as an
 object. Incomplete or malformed arguments return a typed error, including when
-the output limit interrupts a tool call.
+the output limit interrupts a tool call; the streamed fragment is retained on
+the error for feedback.
 
 The shared SSE reader handles framing. The Messages adapter validates stream
 lifecycle, content indexes, delta types, signatures, and completion. Unknown
 event types are ignored for forward compatibility; unknown content/delta
 shapes fail rather than silently losing content. In-stream API error payloads
 remain JSON data through `AnthropicProtocolError`, `ProtocolError`, and
-`ProviderError`.
+`ProviderError`, carrying the stream response's HTTP status on the `Api`
+variant (`ProviderError::status()`).
 
 Token usage distinguishes uncached input, cache creation, cache reads, and
 output. Cumulative usage updates replace previous totals rather than being

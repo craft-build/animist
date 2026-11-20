@@ -35,8 +35,9 @@ pub enum AnthropicProtocolError {
     },
     #[snafu(display("Deferred tool references are not supported by this adapter"))]
     UnsupportedLoadedTools { backtrace: snafu::Backtrace },
-    #[snafu(display("Anthropic returned an API error: {error}"))]
+    #[snafu(display("Anthropic returned an API error (HTTP {status}): {error}"))]
     Api {
+        status: u16,
         error: Value,
         backtrace: snafu::Backtrace,
     },
@@ -68,9 +69,10 @@ pub enum AnthropicProtocolError {
         index: u32,
         backtrace: snafu::Backtrace,
     },
-    #[snafu(display("Tool call {id} has non-object input"))]
+    #[snafu(display("Tool call {id} has non-object input (raw arguments: {arguments})"))]
     InvalidToolInput {
         id: String,
+        arguments: String,
         backtrace: snafu::Backtrace,
     },
     #[snafu(display("Tool call {id} has both initial input and streamed arguments"))]
@@ -78,10 +80,13 @@ pub enum AnthropicProtocolError {
         id: String,
         backtrace: snafu::Backtrace,
     },
-    #[snafu(display("Invalid JSON arguments for tool call {id}: {source}"))]
+    #[snafu(display(
+        "Invalid JSON arguments for tool call {id}: {source} (raw arguments: {arguments})"
+    ))]
     DecodeToolArguments {
         id: String,
         source: serde_json::Error,
+        arguments: String,
     },
     #[snafu(display("Thinking block {index} has no signature"))]
     MissingThinkingSignature {

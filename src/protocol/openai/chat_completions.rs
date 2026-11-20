@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use flume::Sender;
 use serde_json::Value;
-use snafu::{OptionExt, ResultExt, ensure};
+use snafu::{IntoError, OptionExt, ResultExt, ensure};
 
 use super::error::{
     ApiSnafu, ChatReasoningReplayDisabledSnafu, ChoiceAfterFinishSnafu, DecodeChunkSnafu,
@@ -239,6 +239,7 @@ impl Protocol for ChatCompletions {
         response: Self::Response,
         event_tx: &Sender<ProviderEvent>,
     ) -> Result<StreamResponse> {
+        let status = response.status().as_u16();
         let mut events = Events::new(response);
         let mut content = String::new();
         let mut reasoning = String::new();
@@ -255,6 +256,7 @@ impl Protocol for ChatCompletions {
             let value: Value = serde_json::from_str(&data).context(DecodeEventSnafu)?;
             if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
                 return Err(ApiSnafu {
+                    status,
                     error: error.clone(),
                 }
                 .build()
@@ -388,10 +390,25 @@ impl Protocol for ChatCompletions {
                         let input = if call.arguments.is_empty() {
                             Value::Object(serde_json::Map::new())
                         } else {
-                            serde_json::from_str(&call.arguments)
-                                .context(DecodeToolArgumentsSnafu { id: &call.id })?
+                            match serde_json::from_str(&call.arguments) {
+                                Ok(input) => input,
+                                Err(source) => {
+                                    return Err(DecodeToolArgumentsSnafu {
+                                        id: call.id,
+                                        arguments: call.arguments,
+                                    }
+                                    .into_error(source)
+                                    .into());
+                                }
+                            }
                         };
-                        ensure!(input.is_object(), InvalidToolInputSnafu { id: &call.id });
+                        ensure!(
+                            input.is_object(),
+                            InvalidToolInputSnafu {
+                                id: &call.id,
+                                arguments: call.arguments,
+                            }
+                        );
                         let block = ContentBlock::ToolUse {
                             id: call.id,
                             name: call.name,

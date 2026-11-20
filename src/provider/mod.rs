@@ -31,7 +31,7 @@ pub use embedding::{
     EmbeddingModel, EmbeddingProvider, EmbeddingProviderImpl, EmbeddingRequest, EmbeddingResponse,
     EmbeddingUsage,
 };
-pub use error::ProviderError;
+pub use error::{MalformedToolArguments, ProviderError};
 pub use exchange::{ExchangeEvent, InferenceExchange, PartialResponse};
 use flume::Sender;
 pub use model::{

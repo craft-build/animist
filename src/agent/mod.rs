@@ -40,6 +40,9 @@ use tool::{
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 
+/// Model-visible cap on raw tool arguments quoted in feedback observations.
+const RAW_ARGUMENT_FEEDBACK_LIMIT: usize = 1024;
+
 /// A conversation-scoped agent runtime; see `docs/agents.md`.
 #[derive(Debug, Builder)]
 #[builder(on(_, into))]
@@ -175,9 +178,17 @@ impl Agent {
         let system = self.prompt.to_markdown();
         let mut last_response = None;
         let mut retries = 0;
+        let mut tool_argument_feedback = 0_u32;
         for step in 0..self.config.max_steps {
             let (response, expected, visible) = self
-                .infer_step(run, step, &system, &options, &mut retries)
+                .infer_step(
+                    run,
+                    step,
+                    &system,
+                    &options,
+                    &mut retries,
+                    &mut tool_argument_feedback,
+                )
                 .await?;
             let calls = Self::tool_calls(&expected, &response)?;
             let (stored, failure) = self
@@ -276,6 +287,7 @@ impl Agent {
         system: &str,
         options: &crate::provider::RequestOptions,
         retries: &mut u32,
+        tool_argument_feedback: &mut u32,
     ) -> Result<(StreamResponse, HistorySnapshot, Vec<crate::provider::Tool>)> {
         let (response, expected, visible) = loop {
             let messages = self.history.current().await;
@@ -301,23 +313,67 @@ impl Agent {
             let expected = self.history.snapshot().await;
             match self.stream(run, step.into(), &request).await {
                 Ok(response) => break (response, expected, request.tools),
-                Err(error @ AgentError::Inference { .. }) if *retries < self.config.max_retries => {
-                    let recovery = match &self.layers {
-                        Some(layers) => {
-                            run.cancellation
-                                .race(layers.recover(self, run, &error))
-                                .await?
+                Err(error @ AgentError::Inference { .. }) => {
+                    if *tool_argument_feedback < self.config.max_tool_argument_feedback
+                        && !run.cancellation.is_cancelled()
+                        && let AgentError::Inference { source, .. } = &error
+                        && let Some(malformed) = source.malformed_tool_arguments()
+                    {
+                        let raw = if malformed.arguments.len() > RAW_ARGUMENT_FEEDBACK_LIMIT {
+                            let mut end = RAW_ARGUMENT_FEEDBACK_LIMIT;
+                            while !malformed.arguments.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            format!("{}… [truncated]", &malformed.arguments[..end])
+                        } else {
+                            malformed.arguments.to_owned()
+                        };
+                        let observation = StoredMessage::builder()
+                            .timestamp(jiff::Timestamp::now())
+                            .message(
+                                Message::builder()
+                                    .role(Role::User)
+                                    .content(vec![ContentBlock::Text {
+                                        text: format!(
+                                            "Tool call `{}` was not executed because its \
+                                             arguments did not parse: {}\n\nRaw arguments:\n{}",
+                                            malformed.id, malformed.reason, raw
+                                        ),
+                                    }])
+                                    .kind(crate::history::MessageKind::Observation)
+                                    .build(),
+                            )
+                            .build();
+                        let boundary = self.history.snapshot().await;
+                        self.append_step_messages(run, step.into(), &boundary, vec![observation])
+                            .await?;
+                        *tool_argument_feedback += 1;
+                        run.emit(AgentEvent::Retrying {
+                            attempt: run.stats.attempts.load(Ordering::Relaxed),
+                        })
+                        .await;
+                        continue;
+                    }
+                    if *retries < self.config.max_retries {
+                        let recovery = match &self.layers {
+                            Some(layers) => {
+                                run.cancellation
+                                    .race(layers.recover(self, run, &error))
+                                    .await?
+                            }
+                            None => Recovery::Propagate,
+                        };
+                        if recovery == Recovery::Propagate {
+                            return Err(error);
                         }
-                        None => Recovery::Propagate,
-                    };
-                    if recovery == Recovery::Propagate {
+                        *retries += 1;
+                        run.emit(AgentEvent::Retrying {
+                            attempt: run.stats.attempts.load(Ordering::Relaxed),
+                        })
+                        .await;
+                    } else {
                         return Err(error);
                     }
-                    *retries += 1;
-                    run.emit(AgentEvent::Retrying {
-                        attempt: run.stats.attempts.load(Ordering::Relaxed),
-                    })
-                    .await;
                 }
                 Err(error) => return Err(error),
             }

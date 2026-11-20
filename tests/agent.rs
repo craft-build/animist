@@ -4223,3 +4223,179 @@ async fn cancellation_during_step_end_returns_cancelled_without_appending() {
             .any(|event| matches!(event, AgentEvent::MessagesAppended { .. }))
     );
 }
+
+fn malformed_arguments(id: &str, arguments: &str) -> animist::provider::ProviderError {
+    animist::provider::ProviderError::Protocol {
+        source: animist::protocol::ProtocolError::OpenAI {
+            source: animist::protocol::openai::OpenAIProtocolError::DecodeToolArguments {
+                id: id.into(),
+                source: serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+                arguments: arguments.into(),
+            },
+        },
+    }
+}
+
+fn observation_text(message: &Message) -> &str {
+    message
+        .content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn malformed_tool_arguments_are_fed_back_and_retried() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                Err(malformed_arguments("call-1", "{\"text\":}")),
+                response(vec![text("recovered")], StopReason::EndTurn),
+            ],
+            false,
+            std::sync::Arc::clone(&requests),
+        ))
+        .build();
+    let (tx, rx) = flume::unbounded();
+    let report = agent
+        .run(input(), RunOptions::builder().events(tx).build())
+        .await
+        .unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    assert_eq!(report.stats.attempts, 2);
+    assert_eq!(report.stats.steps, 1);
+    let history = agent.history().current().await;
+    assert_eq!(history.len(), 3);
+    let observation = &history[1];
+    assert_eq!(observation.role, Role::User);
+    assert_eq!(observation.kind, MessageKind::Observation);
+    assert_eq!(
+        observation_text(observation),
+        "Tool call `call-1` was not executed because its arguments did not parse: \
+         EOF while parsing an object at line 1 column 1\n\nRaw arguments:\n{\"text\":}"
+    );
+    let events: Vec<AgentEvent> = rx.try_iter().collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::Retrying { attempt: 1 }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::MessagesAppended { .. }))
+    );
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].last().unwrap().content.iter().any(
+        |block| matches!(block, ContentBlock::Text { text } if text.contains("Tool call `call-1`"))
+    ));
+}
+
+#[tokio::test]
+async fn oversized_tool_arguments_are_truncated_in_the_feedback_observation() {
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                Err(malformed_arguments(
+                    "call-1",
+                    &format!("{{\"text\":\"{}\"", "x".repeat(1200)),
+                )),
+                response(vec![text("recovered")], StopReason::EndTurn),
+            ],
+            false,
+            Arc::default(),
+        ))
+        .build();
+    let report = agent.run(input(), RunOptions::default()).await.unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    let history = agent.history().current().await;
+    let observation = observation_text(&history[1]);
+    assert!(observation.contains("… [truncated]"));
+    assert!(observation.len() < 1200);
+}
+
+struct CountRecover(Arc<AtomicUsize>);
+
+#[async_trait]
+impl LayerImpl for CountRecover {
+    async fn recover(
+        &self,
+        _agent: &Agent,
+        _run: &RunContext,
+        _error: &AgentError,
+    ) -> animist::agent::Result<Recovery> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(Recovery::Propagate)
+    }
+}
+
+#[tokio::test]
+async fn tool_argument_feedback_exhaustion_reaches_layers_and_fails_with_the_original_error() {
+    let recoveries = Arc::new(AtomicUsize::new(0));
+    let agent = Agent::builder()
+        .model(model(
+            vec![
+                Err(malformed_arguments("call-1", "{")),
+                Err(malformed_arguments("call-1", "{")),
+                Err(malformed_arguments("call-1", "{")),
+            ],
+            false,
+            Arc::default(),
+        ))
+        .layers(
+            AgentLayer::builder()
+                .layer(Layer::new(CountRecover(std::sync::Arc::clone(&recoveries))))
+                .build(),
+        )
+        .config(AgentConfig::builder().max_retries(1_u32).build())
+        .build();
+    assert!(matches!(
+        agent.run(input(), RunOptions::default()).await,
+        Err(AgentError::Inference { .. })
+    ));
+    assert_eq!(agent.history().current().await.len(), 3);
+    assert_eq!(recoveries.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn zero_tool_argument_feedback_budget_disables_the_path() {
+    let agent = Agent::builder()
+        .model(model(
+            vec![Err(malformed_arguments("call-1", "{"))],
+            false,
+            Arc::default(),
+        ))
+        .config(
+            AgentConfig::builder()
+                .max_tool_argument_feedback(0_u32)
+                .build(),
+        )
+        .build();
+    assert!(matches!(
+        agent.run(input(), RunOptions::default()).await,
+        Err(AgentError::Inference { .. })
+    ));
+    assert_eq!(agent.history().current().await.len(), 1);
+}
+
+#[test]
+fn tool_argument_feedback_config_defaults_and_overrides() {
+    assert_eq!(AgentConfig::builder().build().max_tool_argument_feedback, 2);
+    assert_eq!(
+        serde_json::from_str::<AgentConfig>("{}")
+            .unwrap()
+            .max_tool_argument_feedback,
+        2
+    );
+    assert_eq!(
+        serde_json::from_str::<AgentConfig>(r#"{"max_tool_argument_feedback": 5}"#)
+            .unwrap()
+            .max_tool_argument_feedback,
+        5
+    );
+}

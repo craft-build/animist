@@ -335,6 +335,39 @@ an assembled provider response, and dispatches its complete tool calls. It never
 executes partial streamed arguments. Model-step and total retry budgets are
 independent. Provider errors propagate unless a layer requests recovery.
 
+### Tool-argument feedback
+
+When an inference attempt fails with model-authored malformed tool-call
+arguments — classified across every protocol adapter by
+`ProviderError::malformed_tool_arguments()` — the agent retries the attempt with
+the failure in view instead of dropping the run. It appends a durable
+`Role::User` `MessageKind::Observation` quoting the call id, the parse reason,
+and the exact raw arguments, then continues the same step. The observation text
+starts with a stable prefix:
+
+```
+Tool call `{id}` was not executed because its arguments did not parse: {reason}
+
+Raw arguments:
+{raw}
+```
+
+`raw` is capped at 1024 characters with a trailing `… [truncated]` marker; the
+error itself retains the full fragment. The append uses the step-boundary
+commit path, so it is validated and replay-checked, emitted as
+`MessagesAppended`, and conflicts with concurrent external edits through
+`HistoryChanged`. `Retrying` (naming the next attempt) plus `MessagesAppended`
+carry the signal; there is no dedicated event variant.
+
+The budget is `AgentConfig::max_tool_argument_feedback` (default 2), counted per
+run and independent of `max_retries` — it works with the default configuration
+where `max_retries` is 0, and setting it to 0 disables the path. Feedback
+retries run before the retry budget and before layer `recover` hooks, so layers
+see these failures through `recover` only once the budget is exhausted; from
+there the normal recovery path applies, and without recovery the run fails with
+the original `AgentError::Inference`. The failed attempts themselves commit
+nothing to history; only the observation is durable.
+
 `MaxTokens`, `Paused`, `Refused`, and `ContextWindowExceeded` are distinct terminal
 statuses, not successful completions or implicit continuation requests. Tool calls
 in these responses are closed with not-executed results. The minimal runtime does

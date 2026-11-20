@@ -122,7 +122,8 @@ pub enum AgentEvent {
         step: u64,
         messages: Vec<StoredMessage>,
     },
-    /// The next inference attempt after a layer-requested retry.
+    /// The next inference attempt after a layer-requested or built-in
+    /// tool-argument feedback retry.
     Retrying { attempt: u64 },
     /// An abandoned attempt; its output is retained in the run report.
     AttemptInterrupted {

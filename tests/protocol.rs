@@ -40,6 +40,206 @@ fn protocol_errors_remain_typed_through_the_provider_boundary() {
             }
         }
     ));
+    assert_eq!(error.status(), None);
+    assert!(error.malformed_tool_arguments().is_none());
+}
+
+#[test]
+fn provider_status_covers_transport_and_in_stream_api_failures() {
+    use animist::{
+        protocol::{ProtocolError, anthropic::AnthropicProtocolError, openai::OpenAIProtocolError},
+        provider::ProviderError,
+    };
+
+    assert_eq!(
+        ProviderError::Http {
+            status: 429,
+            body: "busy".into(),
+            body_truncated: false,
+            backtrace: std::backtrace::Backtrace::capture(),
+        }
+        .status(),
+        Some(429)
+    );
+    let status_of = |source: OpenAIProtocolError| {
+        let error: ProviderError = ProtocolError::OpenAI { source }.into();
+        error.status()
+    };
+    assert_eq!(
+        status_of(OpenAIProtocolError::Api {
+            status: 503,
+            error: json!({"message": "busy"}),
+            backtrace: std::backtrace::Backtrace::capture(),
+        }),
+        Some(503)
+    );
+    assert_eq!(
+        status_of(OpenAIProtocolError::ResponseFailed {
+            status: 500,
+            error: json!({"code": "server_error"}),
+            backtrace: std::backtrace::Backtrace::capture(),
+        }),
+        Some(500)
+    );
+    assert_eq!(
+        status_of(OpenAIProtocolError::TruncatedChatStream {
+            finish_reason: None,
+            backtrace: std::backtrace::Backtrace::capture(),
+        }),
+        None
+    );
+    let anthropic: ProviderError = ProtocolError::Anthropic {
+        source: AnthropicProtocolError::Api {
+            status: 529,
+            error: json!({"type": "overloaded_error"}),
+            backtrace: std::backtrace::Backtrace::capture(),
+        },
+    }
+    .into();
+    assert_eq!(anthropic.status(), Some(529));
+    assert_eq!(
+        ProviderError::Protocol {
+            source: ProtocolError::OpenAI {
+                source: OpenAIProtocolError::DecodeEvent {
+                    source: serde_json::from_str::<Value>("{").unwrap_err(),
+                },
+            },
+        }
+        .status(),
+        None
+    );
+}
+
+#[test]
+fn malformed_tool_arguments_classify_across_protocol_sources() {
+    use animist::{
+        protocol::{ProtocolError, anthropic::AnthropicProtocolError, openai::OpenAIProtocolError},
+        provider::{MalformedToolArguments, ProviderError},
+    };
+
+    let decode =
+        |source: OpenAIProtocolError| -> ProviderError { ProtocolError::OpenAI { source }.into() };
+    let openai_error = decode(OpenAIProtocolError::DecodeToolArguments {
+        id: "call-1".into(),
+        source: serde_json::from_str::<Value>("{").unwrap_err(),
+        arguments: "{\"text\":}".into(),
+    });
+    let openai: MalformedToolArguments<'_> = openai_error
+        .malformed_tool_arguments()
+        .expect("decode failures classify");
+    assert_eq!(openai.id, "call-1");
+    assert_eq!(openai.arguments, "{\"text\":}");
+    assert!(openai.reason.contains("EOF while parsing an object"));
+    assert_eq!(
+        decode(OpenAIProtocolError::InvalidToolInput {
+            id: "call-2".into(),
+            arguments: "[1]".into(),
+            backtrace: std::backtrace::Backtrace::capture(),
+        })
+        .malformed_tool_arguments()
+        .expect("non-object failures classify")
+        .reason,
+        "not a JSON object"
+    );
+    let anthropic: ProviderError = ProtocolError::Anthropic {
+        source: AnthropicProtocolError::DecodeToolArguments {
+            id: "call-3".into(),
+            source: serde_json::from_str::<Value>("{").unwrap_err(),
+            arguments: "{\"x\":}".into(),
+        },
+    }
+    .into();
+    let view = anthropic
+        .malformed_tool_arguments()
+        .expect("anthropic classifies");
+    assert_eq!(view.id, "call-3");
+    assert_eq!(view.arguments, "{\"x\":}");
+    #[cfg(feature = "bedrock")]
+    {
+        let bedrock: ProviderError = ProtocolError::Bedrock {
+            source: animist::protocol::bedrock::BedrockProtocolError::InvalidToolInput {
+                id: "call-4".into(),
+                arguments: "[1]".into(),
+                backtrace: std::backtrace::Backtrace::capture(),
+            },
+        }
+        .into();
+        let view = bedrock
+            .malformed_tool_arguments()
+            .expect("bedrock classifies");
+        assert_eq!(view.id, "call-4");
+        let bedrock: ProviderError = ProtocolError::Bedrock {
+            source: animist::protocol::bedrock::BedrockProtocolError::DecodeToolInput {
+                id: "call-5".into(),
+                source: serde_json::from_str::<Value>("{").unwrap_err(),
+                arguments: "{\"x\":".into(),
+            },
+        }
+        .into();
+        let view = bedrock
+            .malformed_tool_arguments()
+            .expect("bedrock decode classifies");
+        assert_eq!(view.arguments, "{\"x\":");
+        assert!(view.reason.contains("EOF while parsing"));
+    }
+    for none in [
+        ProviderError::Protocol {
+            source: ProtocolError::OpenAI {
+                source: OpenAIProtocolError::Refusal {
+                    backtrace: std::backtrace::Backtrace::capture(),
+                },
+            },
+        },
+        ProviderError::Protocol {
+            source: ProtocolError::Anthropic {
+                source: AnthropicProtocolError::TruncatedStream {
+                    backtrace: std::backtrace::Backtrace::capture(),
+                },
+            },
+        },
+    ] {
+        assert!(none.malformed_tool_arguments().is_none());
+    }
+}
+
+#[tokio::test]
+async fn in_stream_api_errors_carry_the_response_status() {
+    use animist::provider::ProviderError;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        assert_ne!(socket.read(&mut request).await.unwrap(), 0);
+        let body = "data: {\"error\":{\"message\":\"busy\"}}\n\n";
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+    let response = reqwest::get(format!("http://{address}")).await.unwrap();
+    let (tx, _rx) = flume::unbounded();
+    let error = ChatCompletions.assemble(response, &tx).await.unwrap_err();
+    assert!(matches!(
+        &error,
+        ProtocolError::OpenAI {
+            source: OpenAIProtocolError::Api { status: 503, .. }
+        }
+    ));
+    let provider_error: ProviderError = error.into();
+    assert_eq!(provider_error.status(), Some(503));
+    server.await.unwrap();
 }
 
 struct PlainText;

@@ -7,7 +7,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bon::Builder;
 use flume::Sender;
 use serde_json::Value;
-use snafu::{OptionExt, ResultExt, ensure};
+use snafu::{IntoError, OptionExt, ResultExt, ensure};
 
 use super::{error, eventstream::Frames, types};
 use crate::{
@@ -145,7 +145,13 @@ impl Protocol for Converse {
                         input,
                         thought_signature: None,
                     } => {
-                        ensure!(input.is_object(), error::InvalidToolInputSnafu { id });
+                        ensure!(
+                            input.is_object(),
+                            error::InvalidToolInputSnafu {
+                                id,
+                                arguments: input.to_string(),
+                            }
+                        );
                         types::InputBlock::ToolUse(
                             types::ToolUse::builder()
                                 .tool_use_id(id)
@@ -452,10 +458,25 @@ impl Protocol for Converse {
                             let input = if json.is_empty() {
                                 Value::Object(serde_json::Map::new())
                             } else {
-                                serde_json::from_str(json)
-                                    .context(error::DecodeToolInputSnafu { id: &*id })?
+                                match serde_json::from_str(json) {
+                                    Ok(input) => input,
+                                    Err(source) => {
+                                        return Err(error::DecodeToolInputSnafu {
+                                            id: id.clone(),
+                                            arguments: std::mem::take(json),
+                                        }
+                                        .into_error(source)
+                                        .into());
+                                    }
+                                }
                             };
-                            ensure!(input.is_object(), error::InvalidToolInputSnafu { id: &*id });
+                            ensure!(
+                                input.is_object(),
+                                error::InvalidToolInputSnafu {
+                                    id: &*id,
+                                    arguments: input.to_string(),
+                                }
+                            );
                             ContentBlock::ToolUse {
                                 id: std::mem::take(id),
                                 name: std::mem::take(name),

@@ -104,6 +104,12 @@ as `openai::OpenAIProtocolError` and `anthropic::AnthropicProtocolError`.
 The provider boundary returns `ProviderError`,
 with a transparent `ProtocolError` variant. Structured failure variants preserve
 source errors and protocol context without depending on provider error types.
+In-stream API error payloads (`Api`, `ResponseFailed`) carry the HTTP status of
+the stream response they arrived on; `ProviderError::status()` is the single
+classification surface for those and transport `Http` failures. Malformed
+tool-argument failures preserve the exact raw arguments fragment next to the
+call id, and `ProviderError::malformed_tool_arguments()` classifies them across
+OpenAI, Anthropic, and Bedrock Converse.
 
 ## Responsibilities
 

@@ -407,6 +407,16 @@ async fn errors_and_truncated_streams_return_errors() {
         (
             Protocol::ChatCompletions,
             200,
+            sse(vec![json!({"error":{"message":"try again"}})]),
+            Some(OpenAIProtocolError::Api {
+                status: 200,
+                error: json!({"message":"try again"}),
+                backtrace: std::backtrace::Backtrace::capture(),
+            }),
+        ),
+        (
+            Protocol::ChatCompletions,
+            200,
             sse(vec![
                 json!({"choices":[{"index":0,"delta":{"content":"partial"}}]}),
             ]),
@@ -422,7 +432,30 @@ async fn errors_and_truncated_streams_return_errors() {
                 json!({"type":"response.failed","response":{"error":{"message":"failed"}}}),
             ]),
             Some(OpenAIProtocolError::ResponseFailed {
+                status: 200,
                 error: json!({"message":"failed"}),
+                backtrace: std::backtrace::Backtrace::capture(),
+            }),
+        ),
+        (
+            Protocol::Responses,
+            200,
+            sse(vec![json!({"type":"error","code":"stream"})]),
+            Some(OpenAIProtocolError::Api {
+                status: 200,
+                error: json!({"type":"error","code":"stream"}),
+                backtrace: std::backtrace::Backtrace::capture(),
+            }),
+        ),
+        (
+            Protocol::Responses,
+            200,
+            sse(vec![
+                json!({"type":"response.completed","response":{"status":"completed","error":{"message":"late"},"output":[]}}),
+            ]),
+            Some(OpenAIProtocolError::Api {
+                status: 200,
+                error: json!({"message":"late"}),
                 backtrace: std::backtrace::Backtrace::capture(),
             }),
         ),
@@ -443,19 +476,29 @@ async fn errors_and_truncated_streams_return_errors() {
             .stream_message(&model(), &[], "", &[], &tx, RequestOptions::default())
             .await;
         let error = result.unwrap_err();
+        let carries_status = expected.as_ref().is_none_or(|expected| {
+            matches!(
+                expected,
+                OpenAIProtocolError::Api { .. } | OpenAIProtocolError::ResponseFailed { .. }
+            )
+        });
+        assert_eq!(error.status(), carries_status.then_some(status));
         if let Some(expected) = expected {
             let ProviderError::Protocol {
                 source: ProtocolError::OpenAI { source },
-            } = error
+            } = &error
             else {
                 panic!("Expected OpenAI protocol error, got {error:?}");
             };
             assert_eq!(
-                std::mem::discriminant(&source),
+                std::mem::discriminant(source),
                 std::mem::discriminant(&expected)
             );
-            if let OpenAIProtocolError::ResponseFailed { error, .. } = source {
-                assert_eq!(error, json!({"message":"failed"}));
+            if let OpenAIProtocolError::ResponseFailed {
+                status: 200, error, ..
+            } = source
+            {
+                assert_eq!(error, &json!({"message":"failed"}));
             }
         } else {
             assert!(matches!(error, ProviderError::Http { status: 401, .. }));
@@ -750,9 +793,17 @@ async fn malformed_tool_json_and_refusals_are_not_successes() {
             panic!("Expected OpenAI protocol error, got {error:?}");
         };
         match (tool_call_id, source) {
-            (Some(expected), OpenAIProtocolError::DecodeToolArguments { id, source }) => {
+            (
+                Some(expected),
+                OpenAIProtocolError::DecodeToolArguments {
+                    id,
+                    source,
+                    arguments,
+                },
+            ) => {
                 assert_eq!(id, expected);
                 assert!(source.is_eof());
+                assert_eq!(arguments, "{");
             }
             (None, OpenAIProtocolError::Refusal { .. }) => {}
             (_, source) => panic!("Unexpected OpenAI error: {source:?}"),
