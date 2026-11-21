@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/craft-build/animist/compare/v0.8.3...v0.9.0) - 2026-11-21
+
+### Added
+
+- [**breaking**] preserve in-stream API error status and retry malformed tool arguments
+
 ## [0.8.3](https://github.com/craft-build/animist/compare/v0.8.2...v0.8.3) - 2026-11-18
 
 ### Fixed
